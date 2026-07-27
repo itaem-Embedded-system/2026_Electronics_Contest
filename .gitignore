@@ -1,0 +1,25 @@
+# Build outputs
+build/
+dist/
+out/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Embedded toolchains
+*.o
+*.elf
+*.hex
+*.bin
+*.map
