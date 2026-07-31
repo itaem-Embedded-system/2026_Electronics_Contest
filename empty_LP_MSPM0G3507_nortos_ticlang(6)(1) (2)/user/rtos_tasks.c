@@ -155,8 +155,8 @@ static uint8_t g_line_trace_turn_out_count = 0;
 // CMD_TO_PULSE: RodActuator_SetTargetCmd(cmd) 的换算比例；cmd=1.0f 时对应多少脉冲。
 // RPM: ZDT 位置模式运动速度；太大容易冲，太小跟随慢。
 // ACC: ZDT 加速度档位，范围 0~255；太大换向会猛，太小启动和制动会慢。
-#define ROD_DEFAULT_MIN_PULSE          (-180)   // 提高摆幅上限，让 out 不再过早顶到 ±120；若再次发散再降回 ±120
-#define ROD_DEFAULT_MAX_PULSE          (180)    // 提高摆幅上限，让 out 不再过早顶到 ±120；若再次发散再降回 ±120
+#define ROD_DEFAULT_MIN_PULSE          (-80)   // 提高摆幅上限，让 out 不再过早顶到 ±120；若再次发散再降回 ±120
+#define ROD_DEFAULT_MAX_PULSE          (80)    // 提高摆幅上限，让 out 不再过早顶到 ±120；若再次发散再降回 ±120
 #define ROD_DEFAULT_MAX_STEP           45       // 提高每 50ms 最大变化量，加快响应；若输出边沿太硬再降到 30
 #define ROD_DEFAULT_CMD_TO_PULSE       300.0f   // 后续钢珠控制输出 -1.0~+1.0 时，对应 -500~+500 脉冲
 #define ROD_DEFAULT_RPM                220      // 提高位置模式速度；若换向太猛或过冲明显再降到 180
@@ -1348,6 +1348,8 @@ static void zdt_motor_test_task(void *pvParameters)
 
     while (1) {
         bool question3_running = (g_question_ui_state == 1U && g_selected_question == 3U);
+        bool has_new_vision = false;
+        int16_t vision_x_snapshot = 0;
 
         // 实时读取串口反馈，避免接收队列堆积
         if (Motor1.rxReady == true) {
@@ -1359,20 +1361,30 @@ static void zdt_motor_test_task(void *pvParameters)
             }
         }
 
+        uint32_t primask = __get_PRIMASK();
+        __disable_irq();
         if (g_vision_ready_flag != 0U) {
+            vision_x_snapshot = g_vision_x_offset;
+            g_vision_ready_flag = 0U;
+            has_new_vision = true;
+        }
+        if (!primask) {
+            __enable_irq();
+        }
+
+        if (has_new_vision) {
             float raw_ball_pos_px;
             float new_ball_pos_px;
-            g_vision_ready_flag = 0U;
 
             if (!vision_zero_ready) {
-                vision_zero_offset_px = (float)g_vision_x_offset;
+                vision_zero_offset_px = (float)vision_x_snapshot;
                 vision_zero_ready = true;
                 ball_pos_px = 0.0f;
                 last_ball_pos_px = 0.0f;
                 ball_vel_px = 0.0f;
             }
 
-            raw_ball_pos_px = ((float)g_vision_x_offset - vision_zero_offset_px) * Q3_VISION_POS_SIGN + Q3_ZERO_BIAS_PX;
+            raw_ball_pos_px = ((float)vision_x_snapshot - vision_zero_offset_px) * Q3_VISION_POS_SIGN + Q3_ZERO_BIAS_PX;
             if (fabsf(raw_ball_pos_px) <= Q3_ZERO_DEADBAND_PX) {
                 raw_ball_pos_px = 0.0f;
             }
@@ -1404,7 +1416,12 @@ static void zdt_motor_test_task(void *pvParameters)
                 ball_vel_px = 0.0f;
                 last_target_pulse = 0;
                 vision_lost_count = 0;
+                uint32_t primask = __get_PRIMASK();
+                __disable_irq();
                 g_vision_ready_flag = 0U;
+                if (!primask) {
+                    __enable_irq();
+                }
             } else {
                 RodActuator_SetTargetPulse(0);
             }
@@ -1417,31 +1434,6 @@ static void zdt_motor_test_task(void *pvParameters)
                 last_target_pulse = 0;
                 vision_lost_count = 0;
                 Stopwatch_Start();
-            }
-
-            if (g_vision_ready_flag != 0U) {
-                float raw_ball_pos_px = ((float)g_vision_x_offset - vision_zero_offset_px) * Q3_VISION_POS_SIGN;
-                float new_ball_pos_px;
-                g_vision_ready_flag = 0U;
-
-                if (fabsf(raw_ball_pos_px) <= Q3_ZERO_DEADBAND_PX) {
-                    raw_ball_pos_px = 0.0f;
-                }
-
-                new_ball_pos_px = ball_pos_px * (1.0f - Q3_POS_FILTER_ALPHA)
-                                + raw_ball_pos_px * Q3_POS_FILTER_ALPHA;
-
-                if (fabsf(new_ball_pos_px) <= Q3_ZERO_DEADBAND_PX) {
-                    new_ball_pos_px = 0.0f;
-                }
-
-                ball_vel_px = ball_vel_px * (1.0f - Q3_VEL_FILTER_ALPHA)
-                            + (new_ball_pos_px - last_ball_pos_px) * Q3_VEL_FILTER_ALPHA;
-                last_ball_pos_px = new_ball_pos_px;
-                ball_pos_px = new_ball_pos_px;
-                vision_lost_count = 0;
-            } else if (vision_lost_count < UINT16_MAX) {
-                vision_lost_count++;
             }
 
             if (vision_lost_count >= Q3_VISION_LOST_CYCLES) {

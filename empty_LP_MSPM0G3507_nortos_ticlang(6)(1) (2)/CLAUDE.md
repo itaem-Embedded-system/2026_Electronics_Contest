@@ -104,7 +104,7 @@ OLED 菜单由 `Key_Scan_Task` 和 `Task_OLED_Display` 共同驱动：
 
 题目入口：
 - **题目 2**：`LineTrace_Start(&g_line_trace_q2_config)`，独立循迹参数，直线 16、弯道 12。
-- **题目 3**：菜单只进入运行态；`ZDT_Test` 任务检测到题目 3 后接管视觉闭环摆杆。
+- **题目 3**：菜单进入运行态；`ZDT_Test` 任务检测到题目 3 后接管视觉闭环摆杆，当前目标为中心 `0px` 稳定。
 - **题目 4**：`Chassis_MoveRelativeCmLineTrace(165cm, 11, &g_line_trace_s2_config)`，位置环决定终点，灰度循迹只负责转向纠偏。
 - **题目 5/6**：`LineTrace_StartSmoothWithStep(&g_line_trace_q56_config, 0.5f)`，共用循迹参数，直线/弯道均 10，起步每 50ms 增加 0.5。
 
@@ -144,7 +144,8 @@ Ctrl_Task 每周期用左右轮原始脉冲平均值累加 `g_pos_current_pulse`
 - 只有 `g_question_ui_state==1 && g_selected_question==3` 时进入比赛控制。
 - 首帧视觉数据建立零位偏置，后续按 `Q3_ZERO_BIAS_PX`、`Q3_ZERO_DEADBAND_PX` 做补偿和死区。
 - 位置低通 `Q3_POS_FILTER_ALPHA=0.35`，速度低通 `Q3_VEL_FILTER_ALPHA=0.25`。
-- 控制律：`rod_cmd = Q3_KP_PULSE_PER_PX * pos_error - Q3_KD_PULSE_PER_PX * ball_vel`。
+- 当前目标位置固定为 `target_pos_px = 0.0f`，用于中心稳定；虽然代码保留了 `Q3_TARGET_5CM_PX`、`Q3_TARGET_STEP_PX`、到达确认和保持周期等参数，但尚未接入 O→+5cm→-5cm 目标序列。
+- 控制律是视觉 PD：`rod_cmd = Q3_KP_PULSE_PER_PX * pos_error - Q3_KD_PULSE_PER_PX * ball_vel`，没有使用通用 `PID_Update()`，也没有积分项。
 - 输出经摆杆脉冲限幅/步进限速后发送 `ZDT_MoveAbsolute()`；视觉丢失超过 `Q3_VISION_LOST_CYCLES` 则回中。
 
 ### IMU 姿态解算逻辑
@@ -253,6 +254,10 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 ### 🟡 注意: 题目 3 串口文本调试输出
 
 题目 3 通过 `zdt_motor_test_task()` 中的 `VOFA_SendString()` 经 UART2 发送文本 CSV；由于 UART2 同时负责 `printf` 重定向和字符串命令接收，调试输出应保持低频、短行，避免阻塞控制任务。VOFA 字段、分析脚本和强化诊断计划统一维护在根目录 `.trae/documents/vofa分析脚本编写指导.md`。
+
+### 🟡 注意: 题目 3 钢球控制仍是基础视觉 PD
+
+`zdt_motor_test_task()` 当前只做中心 `0px` 稳定，控制律为位置误差 P 项 + 视觉速度 D 项。尚未接入 O→+5cm→-5cm 自动目标序列，也未结合小车速度、加速度或转弯状态做行驶中稳球前馈。任务 4/5 的行驶中稳球和任务 6 的指定位置保持仍需要继续完善。
 
 ### 🟡 注意: 题目 3 视觉数据处理存在重复消费结构
 
