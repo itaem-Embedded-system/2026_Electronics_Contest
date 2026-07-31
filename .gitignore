@@ -1,0 +1,25 @@
+# Build outputs
+**/Debug/
+**/Release/
+*.o
+*.d
+*.out
+*.map
+*.obj
+*.elf
+*.hex
+*.bin
+
+# Archives / backups
+*.zip
+*.7z
+*.rar
+
+# IDE / cache
+**/.clangd/.cache/
+**/.metadata/
+**/.settings/*.log
+
+# OS
+Thumbs.db
+.DS_Store
