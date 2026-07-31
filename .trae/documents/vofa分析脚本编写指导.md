@@ -1,31 +1,25 @@
-# VOFA 分析脚本编写指导
+# VOFA 文档与分析脚本编写指导
 
-## 目标
+## 1. 文档定位
 
-编写一个电脑端串口分析脚本，用于采集和分析当前固件发给 VOFA/串口工具的数据。
+这是当前工程中 VOFA 相关内容的统一维护文档，用于说明：
 
-当前工程里有两类 VOFA 相关发送能力：
+- 当前固件实际通过哪个串口发送 VOFA/调试数据。
+- 当前题目 3 输出了哪些字段。
+- 分析脚本应该如何解析、保存和辅助判断问题。
+- `VOFA_SendString()` 与 `VOFA_SendData()` 的区别。
 
-1. `user/uart.c` 中的 `VOFA_SendString()`：直接通过 `UART_2_INST` 发送字符串。
-2. `user/vofa.c` 中的 `VOFA_SendData()`：通用 VOFA 打包库，支持 FireWater、JustFloat、RawData 三种格式。
+当前结论：**题目 3 调试输出走 UART2 文本 CSV，不走旧 UART3 JustFloat 调试任务。**
 
-当前实际题目 3 调试输出使用第 1 类，也就是 `VOFA_SendString()` 走 UART2 文本 CSV。
+---
 
-## 当前实际发送入口
+## 2. 当前 VOFA 发送模块现状
 
-当前题目 3 输出位置在 `user/rtos_tasks.c` 的 `zdt_motor_test_task()` 中：
+当前工程里有两类 VOFA 相关发送能力。
 
-```c
-#if USE_VOFA_DEBUG
-        snprintf(vofa_buf, sizeof(vofa_buf), "%ld,%ld,%ld\n",
-                 (long)ball_pos_px,
-                 (long)target_pos_px,
-                 (long)last_target_pulse);
-        VOFA_SendString(vofa_buf);
-#endif
-```
+### 2.1 当前实际使用：`VOFA_SendString()`
 
-底层发送函数在 `user/uart.c`：
+位置：`user/uart.c`
 
 ```c
 void VOFA_SendString(char *str) {
@@ -36,219 +30,170 @@ void VOFA_SendString(char *str) {
 }
 ```
 
-因此当前分析脚本应默认按 UART2 文本行解析，而不是默认按 JustFloat 二进制解析。
+特性：
 
-## 当前 CSV 字段
+- 通过 `UART_2_INST` 阻塞逐字节发送。
+- 适合发送 CSV / FireWater 风格文本行。
+- 当前题目 3 调试输出实际使用这一路。
+- 当前物理连接是 UART2 接 VOFA/串口工具，因此分析脚本默认文本解析。
 
-当前每行 3 个整数：
+### 2.2 通用库保留：`VOFA_SendData()`
 
-```text
-ball,target,cmd
-```
+位置：`user/vofa.c` / `user/vofa.h`
 
-含义：
+`VOFA_SendData()` 是通用 VOFA 打包库，支持：
 
-| 字段 | 来源 | 含义 |
+| 格式 | 说明 | 当前题目 3 是否使用 |
 |---|---|---|
-| `ball` | `ball_pos_px` | 题目 3 处理后的球位置 |
-| `target` | `target_pos_px` | 题目 3 目标位置，当前通常为 0 |
-| `cmd` | `last_target_pulse` | 本周期计算出的摆杆目标脉冲 |
+| FireWater | 文本 CSV 行，形如 `v0,v1,v2\n` | 否，题目 3 直接用 `VOFA_SendString()` |
+| JustFloat | 多个 float 小端二进制 + 帧尾 `00 00 80 7F` | 否，旧 UART3 调试任务已移除 |
+| RawData | 按字段类型发送原始字节 | 否 |
 
-示例：
+当前不需要修改 `vofa.c` / `vofa.h`。
 
-```text
--12,0,30
--10,0,25
-0,0,0
+---
+
+## 3. 当前题目 3 实际输出
+
+当前题目 3 输出位置在 `user/rtos_tasks.c` 的 `zdt_motor_test_task()` 中。
+
+当前已经升级为 9 字段，并且只在题目 3 运行时输出，每 2 个 50ms 控制周期输出 1 次，即约 10Hz。
+
+当前固件输出代码等价于：
+
+```c
+#if USE_VOFA_DEBUG
+        if (question3_running) {
+            vofa_debug_div++;
+            if (vofa_debug_div >= 2U) {
+                vofa_debug_div = 0U;
+                snprintf(vofa_buf, sizeof(vofa_buf),
+                         "%lu,%d,%ld,%ld,%ld,%ld,%ld,%u,%u\n",
+                         (unsigned long)g_rx_pulse,
+                         (int)g_vision_x_offset,
+                         (long)ball_pos_px,
+                         (long)target_pos_px,
+                         (long)ball_vel_px,
+                         (long)last_target_pulse,
+                         (long)RodActuator_GetTargetPulse(),
+                         (unsigned int)vision_lost_count,
+                         (unsigned int)question3_running);
+                VOFA_SendString(vofa_buf);
+            }
+        } else {
+            vofa_debug_div = 0U;
+        }
+#endif
 ```
 
-## 脚本默认设计
-
-### 1. 串口参数
-
-默认参数建议：
-
-```text
-port = COM13
-baud = 115200
-mode = text
-encoding = ascii / utf-8 ignore
-line ending = \n
-```
-
-脚本应允许命令行覆盖：
-
-```text
---port COM13
---baud 115200
---csv logs/q3_vofa.csv
---duration 0
-```
-
-### 2. 文本解析逻辑
-
-推荐流程：
-
-1. 打开串口。
-2. 按行读取，直到遇到 `\n`。
-3. 去掉 `\r\n` 和空白字符。
-4. 跳过空行。
-5. 用英文逗号分割。
-6. 当前期望 3 列。
-7. 每列转为整数或浮点。
-8. 增加电脑端时间戳和行号。
-9. 实时打印并写入 CSV。
-
-CSV 保存字段建议：
-
-```text
-time_s,line_index,ball,target,cmd,raw_text
-```
-
-### 3. 异常处理
-
-脚本需要处理这些情况：
-
-- 串口打不开：提示检查端口号、VOFA/串口助手是否占用。
-- 长时间无数据：提示检查 UART2 TX/RX/GND、单片机是否运行、题目 3 是否启动、`USE_VOFA_DEBUG` 是否为 1。
-- 行格式错误：保留 `raw_text`，计入 bad line，不让脚本退出。
-- 列数不是 3：提示当前固件字段可能已经扩展，需要同步更新字段表。
-- 数值转换失败：保存原始行，继续采集下一行。
-
-## 推荐 Python 结构
-
-脚本可以按以下结构写：
-
-```python
-import argparse
-import csv
-import time
-from pathlib import Path
-
-import serial
-
-FIELD_NAMES = ["ball", "target", "cmd"]
-
-
-def parse_line(line):
-    text = line.strip()
-    if not text:
-        return None
-    parts = text.split(",")
-    if len(parts) != len(FIELD_NAMES):
-        raise ValueError(f"字段数量不匹配: {text}")
-    return [float(item) for item in parts]
-```
-
-主循环建议：
-
-```python
-start = time.time()
-line_index = 0
-bad_lines = 0
-
-while duration <= 0 or time.time() - start < duration:
-    raw = ser.readline()
-    if not raw:
-        continue
-
-    text = raw.decode("utf-8", errors="ignore").strip()
-    now = time.time() - start
-
-    try:
-        values = parse_line(text)
-        if values is None:
-            continue
-        line_index += 1
-        row = [now, line_index, *values, text]
-        writer.writerow(row)
-        print(f"#{line_index} t={now:.3f}s ball={values[0]} target={values[1]} cmd={values[2]}")
-    except ValueError as exc:
-        bad_lines += 1
-        print(f"坏行 {bad_lines}: {text} ({exc})")
-```
-
-## 如果固件扩展为 9 字段
-
-如果后续题目 3 输出扩展为：
+当前 CSV 格式：
 
 ```text
 rx,raw,ball,target,vel,cmd,rod,lost,run
 ```
 
-只需要把脚本字段表改为：
+字段含义：
+
+| 字段 | 来源 | 诊断用途 |
+|---|---|---|
+| `rx` | `g_rx_pulse` | 判断 UART1 视觉串口是否持续收到数据 |
+| `raw` | `g_vision_x_offset` | 判断视觉原始方向、零位、跳变 |
+| `ball` | `ball_pos_px` | 判断滤波后的钢珠位置 |
+| `target` | `target_pos_px` | 判断目标位置 |
+| `vel` | `ball_vel_px` | 判断速度估计噪声和 Kd 是否放大噪声 |
+| `cmd` | `last_target_pulse` | 控制律输出 |
+| `rod` | `RodActuator_GetTargetPulse()` | 限幅/限速后的实际摆杆目标 |
+| `lost` | `vision_lost_count` | 判断视觉丢帧/更新不稳定 |
+| `run` | `question3_running` | 判断当前是否处于题目 3 运行状态 |
+
+设计约束：
+
+- 不修改 `VOFA_SendString()`。
+- 不修改 `vofa.c` / `vofa.h`。
+- 不修改 UART1 视觉接收 ISR。
+- 不修改 ZDT 底层协议。
+- 输出只在题目 3 运行时发送。
+- 默认约 10Hz，降低 UART2 阻塞影响。
+
+---
+
+## 4. 如何通过 9 字段诊断问题
+
+| 问题 | 主要观察字段 | 判断方法 |
+|---|---|---|
+| 控制方向错误 | `raw,ball,target,cmd,rod` | `ball` 偏离 `target` 时，`cmd/rod` 应让球回中心；若越控越远，优先检查 `Q3_VISION_POS_SIGN` 或 `Q3_KP_PULSE_PER_PX` 符号 |
+| Kp/Kd 不匹配 | `ball,target,vel,cmd` | 接近目标时 `cmd` 仍很大，多为 Kp 过大/Kd 不足；`vel` 抖动带动 `cmd` 抖动，说明 Kd 放大噪声 |
+| 视觉/滤波延迟 | `raw,ball,cmd,rod` | `raw` 先变，`ball` 晚几帧跟上，说明滤波/视觉延迟；`cmd/rod` 再滞后则执行链路也慢 |
+| 速度估计噪声 | `ball,vel,cmd` | `ball` 小抖但 `vel` 大跳，且 `cmd` 高频反打，说明速度估计噪声进入 Kd 项 |
+| 机械死区/非线性 | `cmd,rod,ball` | `cmd/rod` 已变化但 `ball` 长时间不动，随后突然冲出，可能是死区、摩擦或间隙 |
+| 输出限幅/限速 | `cmd,rod` | `cmd` 很大但 `rod` 每次只变一段，说明受 `ROD_DEFAULT_MAX_STEP` 限制；`cmd` 长期卡 ±上限说明饱和 |
+| 零位偏置不准 | `raw,ball,target,cmd` | 球在机械中心但 `ball` 不接近 `target`，且 `cmd` 长期非 0，需要检查 `Q3_ZERO_BIAS_PX` 和首帧零位 |
+| 视觉消费异常 | `rx,raw,ball,lost` | `rx` 增长但 `ball` 更新不稳、`lost` 偶尔上升，说明视觉接收/消费节奏需要整理 |
+
+---
+
+## 5. 分析脚本维护要求
+
+当前脚本：`empty_LP_MSPM0G3507_nortos_ticlang(6)(1) (2)/tools/analyze_vofa_text.py`
+
+脚本字段表必须与固件 CSV 严格对齐：
 
 ```python
 FIELD_NAMES = ["rx", "raw", "ball", "target", "vel", "cmd", "rod", "lost", "run"]
 ```
 
-并同步更新打印格式即可。解析框架不需要改变。
-
-## VOFA_SendData 通用库兼容说明
-
-虽然当前实际输出是 UART2 文本，但 `user/vofa.c` 仍保留通用打包函数 `VOFA_SendData()`。
-
-### FireWater
-
-`VOFA_FMT_FIREFIREWATER` 发送格式是文本行：
+CSV 保存字段：
 
 ```text
-v0,v1,v2,...\n
+timestamp,time_s,line_index,rx,raw,ball,target,vel,cmd,rod,lost,run,raw_text
 ```
 
-脚本可以复用当前 text/csv 解析逻辑。
+解析策略：
 
-### JustFloat
+1. 打开串口。
+2. 按行读取。
+3. 去掉 `\r\n`。
+4. 英文逗号分割。
+5. 检查列数等于 `len(FIELD_NAMES)`。
+6. 转成数值。
+7. 添加电脑端时间戳。
+8. 写入 CSV。
+9. 可选实时打印。
 
-`VOFA_FMT_JUSTFLOAT` 发送格式是：
+异常提示要求：
 
-```text
-N 个 float 小端二进制 + 帧尾 00 00 80 7F
-```
+- 串口打不开：检查端口号和 VOFA/串口助手占用。
+- 10 秒无数据：检查 UART2 接线、单片机是否运行、题目 3 是否启动、`USE_VOFA_DEBUG` 是否为 1。
+- 字段数量不匹配：提示固件字段和 `FIELD_NAMES` 不一致。
+- 数值转换失败：保留原始行并继续采集。
 
-只有当固件重新创建 VOFA 句柄、绑定发送回调，并实际调用 `VOFA_SendData(..., VOFA_FMT_JUSTFLOAT, ...)` 时，脚本才需要启用 JustFloat 解析。
+---
 
-### RawData
+## 6. 当前不建议默认使用 JustFloat
 
-`VOFA_FMT_RAWDATA` 是原始字节发送，脚本必须知道每个字段的数据类型和顺序，否则无法可靠解析。
+当前工程已经移除旧 UART3 JustFloat 调试任务，题目 3 实际输出是 UART2 文本 CSV。
 
-## 当前不建议默认使用 JustFloat 的原因
+如果脚本默认按 JustFloat 解析，会出现：
 
-当前工程已经移除旧 UART3 JustFloat 调试任务，题目 3 实际输出是 UART2 文本 CSV。如果脚本默认按 JustFloat 解析，会表现为：
+- 找不到帧尾 `00 00 80 7F`。
+- 有效帧数为 0。
+- 文本字节被当作二进制垃圾丢弃。
 
-- 找不到帧尾 `00 00 80 7F`
-- 有效帧数为 0
-- 缓冲区不断丢弃文本字节
+因此当前分析脚本默认必须是 `text/csv` 模式。JustFloat 解析只作为以后重新启用 `VOFA_SendData(..., VOFA_FMT_JUSTFLOAT, ...)` 时的兼容分支。
 
-所以当前脚本默认模式必须是文本行解析。
+---
 
-## 验证清单
+## 7. 文档维护规则
 
-1. 串口能打开。
-2. 题目 3 启动后能看到连续文本行。
-3. 每行能解析出 3 个字段。
-4. CSV 文件能保存：`time_s,line_index,ball,target,cmd,raw_text`。
-5. `ball` 随视觉输入变化。
-6. `target` 当前通常为 0。
-7. `cmd` 随摆杆控制输出变化。
-8. 如果无数据，先检查题目 3 是否运行和 `USE_VOFA_DEBUG` 是否开启。
+后续只维护这一份 VOFA 主文档。若出现新的 VOFA 抓包/分析计划，应优先合并到本文档对应章节，而不是新开重复文档。
 
-## 文件命名建议
+需要同步维护的位置：
 
-建议脚本命名为：
+| 位置 | 维护要求 |
+|---|---|
+| 本文档 | 记录当前实际发送入口、字段、脚本设计和诊断方法 |
+| `tools/analyze_vofa_text.py` | 字段表、顶部注释、实时打印格式必须与固件 CSV 对齐 |
+| `CLAUDE.md` | 只保留高层说明，避免重复大量字段细节 |
+| `user/rtos_tasks.c` | 注释只说明输出目的、字段顺序和节流策略，不写过时 UART3/JustFloat 内容 |
 
-```text
-tools/analyze_vofa_text.py
-```
-
-日志目录建议：
-
-```text
-tools/logs/
-```
-
-默认日志文件名建议带时间戳：
-
-```text
-q3_vofa_YYYYMMDD_HHMMSS.csv
-```
+不再维护旧 UART3 JustFloat 抓包文档；如需恢复 JustFloat，应在本文档新增“JustFloat 恢复方案”章节。

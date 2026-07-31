@@ -45,7 +45,7 @@ main()  [empty.c]
   └── vTaskStartScheduler()      — 启动调度器, 正常不返回
 ```
 
-`RTOS_Tasks_Init()` 是运行期核心装配点：先创建 `target_ctrl_Mutex`，再创建 IMU、底盘控制、菜单按键、灰度采样、OLED、蓝牙、蜂鸣器、ZDT 摆杆和 VOFA 调试任务。若关键任务创建失败，代码会关中断、停电机、蜂鸣器/LED 报警并软复位。
+`RTOS_Tasks_Init()` 是运行期核心装配点：先创建 `target_ctrl_Mutex`，再创建 IMU、底盘控制、CPU 监控、菜单按键、灰度采样、OLED、蓝牙、蜂鸣器和 ZDT 摆杆任务。题目 3 的 VOFA/CSV 调试输出集成在 `ZDT_Test` 任务中，不再有独立 VOFA 调试任务。若关键任务创建失败，代码会关中断、停电机、蜂鸣器/LED 报警并软复位。
 
 ### FreeRTOS 任务总览 (按创建顺序)
 
@@ -61,7 +61,7 @@ main()  [empty.c]
 | **BT_Task** | 3 | 128w | UART3 蓝牙接收队列 + 帧解析，填充 `g_bt_cmd` |
 | **Heartbeat** | 1 | 128w | LED 500ms 翻转，系统存活指示 |
 | **Buzzer** | 2 | 128w | 按 `g_bt_beep_cmd` 执行短鸣/长鸣提示 |
-| **ZDT_Test** | 2 | 256w | ZDT-X42S 初始化、题目 3 视觉闭环摆杆控制，并通过 UART2 输出题目 3 CSV 调试数据 |
+| **ZDT_Test** | 2 | 512w | ZDT-X42S 初始化、题目 3 视觉闭环摆杆控制，并通过 UART2 输出题目 3 CSV 调试数据 |
 
 ### 电机控制架构 (Ctrl_Task 核心)
 
@@ -252,7 +252,7 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 
 ### 🟡 注意: 题目 3 串口文本调试输出
 
-题目 3 通过 `zdt_motor_test_task()` 中的 `VOFA_SendString()` 经 UART2 发送文本 CSV；由于 UART2 同时负责 `printf` 重定向和字符串命令接收，调试输出应保持低频、短行，避免阻塞控制任务。
+题目 3 通过 `zdt_motor_test_task()` 中的 `VOFA_SendString()` 经 UART2 发送文本 CSV；由于 UART2 同时负责 `printf` 重定向和字符串命令接收，调试输出应保持低频、短行，避免阻塞控制任务。VOFA 字段、分析脚本和强化诊断计划统一维护在根目录 `.trae/documents/vofa分析脚本编写指导.md`。
 
 ### 🟡 注意: 题目 3 视觉数据处理存在重复消费结构
 

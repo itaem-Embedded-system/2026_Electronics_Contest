@@ -34,6 +34,37 @@
 #include "stdio.h"
 #include "string.h"
 
+volatile uint32_t g_fault_code = 0;          // 0=正常, 1=malloc失败, 2=任务栈溢出
+volatile char g_fault_task_name[16] = {0};
+volatile uint32_t g_fault_free_heap = 0;
+volatile uint32_t g_fault_min_ever_free_heap = 0;
+
+static void Fault_RecordAndHalt(uint32_t code, const char *task_name)
+{
+    __disable_irq();
+    Motor_SetPWM(1, 0);
+    Motor_SetPWM(2, 0);
+
+    g_fault_code = code;
+    g_fault_free_heap = xPortGetFreeHeapSize();
+    g_fault_min_ever_free_heap = xPortGetMinimumEverFreeHeapSize();
+
+    for (uint8_t i = 0; i < sizeof(g_fault_task_name) - 1U; i++) {
+        if (task_name != NULL && task_name[i] != '\0') {
+            g_fault_task_name[i] = task_name[i];
+        } else {
+            g_fault_task_name[i] = '\0';
+            break;
+        }
+    }
+    g_fault_task_name[sizeof(g_fault_task_name) - 1U] = '\0';
+
+    DL_GPIO_clearPins(GPIO_BEEP_PORT, GPIO_BEEP_PIN_0_PIN);
+    DL_GPIO_clearPins(GPIO_LED_PORT,  GPIO_LED_Freertos_LED_PIN);
+
+    while(1) {}
+}
+
 int main(void)
 {
     // 1. 初始化 SysConfig 自动生成的底层硬件 

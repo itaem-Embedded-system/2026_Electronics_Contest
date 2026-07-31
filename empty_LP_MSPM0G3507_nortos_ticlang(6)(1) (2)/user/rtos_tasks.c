@@ -1340,7 +1340,8 @@ static void zdt_motor_test_task(void *pvParameters)
     int32_t last_target_pulse = 0;
     uint16_t vision_lost_count = 0;
 #if USE_VOFA_DEBUG
-    char vofa_buf[64];
+    char vofa_buf[128];
+    uint8_t vofa_debug_div = 0;
 #endif
 
     RodActuator_SetTargetPulse(0);
@@ -1462,11 +1463,26 @@ static void zdt_motor_test_task(void *pvParameters)
         }
 
 #if USE_VOFA_DEBUG
-        snprintf(vofa_buf, sizeof(vofa_buf), "%ld,%ld,%ld\n",
-                 (long)ball_pos_px,
-                 (long)target_pos_px,
-                 (long)last_target_pulse);
-        VOFA_SendString(vofa_buf);
+        if (question3_running) {
+            vofa_debug_div++;
+            if (vofa_debug_div >= 2U) {
+                vofa_debug_div = 0U;
+                snprintf(vofa_buf, sizeof(vofa_buf),
+                         "%lu,%d,%ld,%ld,%ld,%ld,%ld,%u,%u\n",
+                         (unsigned long)g_rx_pulse,
+                         (int)g_vision_x_offset,
+                         (long)ball_pos_px,
+                         (long)target_pos_px,
+                         (long)ball_vel_px,
+                         (long)last_target_pulse,
+                         (long)RodActuator_GetTargetPulse(),
+                         (unsigned int)vision_lost_count,
+                         (unsigned int)question3_running);
+                VOFA_SendString(vofa_buf);
+            }
+        } else {
+            vofa_debug_div = 0U;
+        }
 #endif
 
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -1765,7 +1781,7 @@ void RTOS_Tasks_Init(void) {
 #if USE_ZDT_STEPPER
     xTaskCreate((TaskFunction_t)zdt_motor_test_task,
                 "ZDT_Test",
-                256,
+                512,        // 2KB: 题目3任务包含 VOFA 缓冲、snprintf 和多组浮点局部变量，256w 容易栈溢出
                 NULL,
                 2,
                 NULL);

@@ -335,12 +335,12 @@ void OLED_ShowString(int16_t X, int16_t Y, char *String, uint8_t FontSize)
   * @param  format: 带有 %d, %f 等占位符的格式化字符串模板 (如 "Speed:%d")
   * @param  ... : 对应占位符的变量列表
   */
-void OLED_Printf(int16_t X, int16_t Y, uint8_t FontSize, char *format, ...)
+void OLED_Printf(int16_t X, int16_t Y, uint8_t FontSize, const char *format, ...)
 {
-    char String[256];
+    char String[64];
     va_list arg;
     va_start(arg, format);
-    vsprintf(String, format, arg);
+    vsnprintf(String, sizeof(String), format, arg);
     va_end(arg);
     OLED_ShowString(X, Y, String, FontSize);
 }
