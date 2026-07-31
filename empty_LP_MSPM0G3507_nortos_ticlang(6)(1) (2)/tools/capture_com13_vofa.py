@@ -27,7 +27,7 @@ DEFAULT_CHANNEL_NAMES = [
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="自动抓取 COM13 的 VOFA/串口数据，默认解析 JustFloat 3 通道。"
+        description="自动抓取 COM13 的串口数据；当前固件默认按 UART2 文本 CSV 读取。"
     )
     parser.add_argument("--port", default="COM13", help="串口号，默认 COM13")
     parser.add_argument("--baud", type=int, default=115200, help="波特率，默认 115200")
@@ -72,7 +72,7 @@ def print_start_message(args, csv_path):
     print(f"模式: {args.mode}")
     if args.mode == "justfloat":
         print(f"JustFloat 通道数: {args.channels}")
-        print("当前固件默认含义: ch0=位置误差, ch1=当前位置脉冲, ch2=目标速度")
+        print("JustFloat 仅用于旧固件；当前题目 3 默认是 UART2 文本 CSV")
         print("帧格式: N 个 float 小端数据 + 帧尾 00 00 80 7F")
     print(f"CSV: {csv_path}")
     print("停止方法: 按 Ctrl+C")

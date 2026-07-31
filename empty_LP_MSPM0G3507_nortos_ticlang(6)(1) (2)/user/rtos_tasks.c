@@ -287,16 +287,6 @@ typedef struct {
 volatile TaskUsage_t task_usage_table[MAX_TRACKED_TASKS];
 
 /* =========================================================================
- * VOFA JustFloat 调试全局变量
- *
- * 注意: VOFA_HandleTypeDef 包含 rx_ring_buf[512] + frame_buf[256] ≈ 800B,
- *       必须分配在全局区 (BSS), 绝不能放在任务栈上!
- *       vofa_types 同样放全局区, 减轻任务栈压力.
- * ========================================================================= */
-static VOFA_HandleTypeDef hvofa;
-static VOFA_Data_TypeDef_Enum vofa_types[9];
-
-/* =========================================================================
  * 本文件内部辅助函数
  * ========================================================================= */
 void LineTrace_Stop(void);
@@ -385,11 +375,6 @@ static void LineTrace_StartInternal(const LineTrace_Config_t *config, uint8_t sm
 void LineTrace_Start(const LineTrace_Config_t *config)
 {
     LineTrace_StartInternal(config, 0);
-}
-
-static void LineTrace_StartSmooth(const LineTrace_Config_t *config)
-{
-    LineTrace_StartInternal(config, 1);
 }
 
 static void LineTrace_StartSmoothWithStep(const LineTrace_Config_t *config, float smooth_step)
@@ -1663,80 +1648,6 @@ static void led_heartbeat_task(void *pvParameters)
 }
 
 /* =========================================================================
- * VOFA JustFloat 调试任务
- *
- * 功能: 通过 UART_1 (UART1, PB4/PB5, 115200) 以 JustFloat 格式
- *       周期性地发送 IMU 9 通道数据到 VOFA+ 上位机.
- *
- * JustFloat 帧 (9 通道, 36 字节 + 4 字节帧尾 0x00 0x00 0x80 0x7F):
- *   Ch 0-2: GyroX/Y/Z       float   (dps)
- *   Ch 3-5: AccelX/Y/Z       float   (g)
- *   Ch 6-8: Roll/Pitch/Yaw   float   (deg)
- *
- * 发送周期: 10ms (100Hz)
- *
- * 优先级: 2 (低于 IMU_Task 的 3, 与 Ctrl_Task 同级)
- * 任务栈: 256 words (1024 bytes) — hvofa/vofa_types 均在全局区
- *
- * VOFA+ 配置: 数据协议选 JustFloat, 9 通道 (全 float)
- * ========================================================================= */
-
-/* VOFA UART 发送回调 — 与 Test 工程完全一致 */
-// static bool VOFA_UART_SendCallback(void *serial_handle,
-//                                     const uint8_t *data, uint16_t len)
-// {
-//     (void)serial_handle;
-//     for (uint16_t i = 0; i < len; i++) {
-//         DL_UART_Main_transmitDataBlocking(UART_1_INST, data[i]);
-//     }
-//     return true;
-// }
-
-/* VOFA UART 发送回调 — 改为使用 UART_3_INST (蓝牙接口) */
-static bool VOFA_UART_SendCallback(void *serial_handle,
-                                    const uint8_t *data, uint16_t len)
-{
-    (void)serial_handle;
-    for (uint16_t i = 0; i < len; i++) {
-        // 将原代码的 UART_1_INST 替换为 UART_3_INST
-        DL_UART_Main_transmitDataBlocking(UART_3_INST, data[i]);
-    }
-    return true;
-}
-
-
-
-#if USE_IMU_SENSOR
-static void vofa_debug_task(void *pvParameters)
-{
-    /* 初始化 VOFA: JustFloat 3通道, 标明 115200 */
-    VOFA_Init(&hvofa, NULL, VOFA_UART_SendCallback,
-              VOFA_FMT_JUSTFLOAT, VOFA_BAUD_115200);
-
-    for (int i = 0; i < 3; i++) vofa_types[i] = VOFA_DATA_FLOAT;
-
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    
-    // 毫无压力！直接拉到 100Hz (10ms一帧)，波形绝对丝滑
-    const TickType_t xPeriod = pdMS_TO_TICKS(10);  
-
-    while (1) {
-        vTaskDelayUntil(&xLastWakeTime, xPeriod);
-
-        float frame[3];
-
-        taskENTER_CRITICAL();
-        frame[0] = g_pos_target_pulse - g_pos_current_pulse;
-        frame[1] = g_pos_current_pulse;
-        frame[2] = target_speed;
-
-        taskEXIT_CRITICAL();
-
-        VOFA_SendData(&hvofa, frame, 3, vofa_types);
-    }
-}
-#endif
-/* =========================================================================
  * 3. 任务创建区 (对外暴露的唯一接口)
  * ========================================================================= */
 void RTOS_Tasks_Init(void) {
@@ -1857,16 +1768,6 @@ void RTOS_Tasks_Init(void) {
                 256,
                 NULL,
                 2,
-                NULL);
-#endif
-
-    /* VOFA RawData 调试任务 — IMU 13ch + debug flags 100Hz */
-#if USE_IMU_SENSOR && USE_VOFA_DEBUG
-    xTaskCreate(vofa_debug_task,
-                "VOFA_Debug",
-                256,        /* 1024B: hvofa(~800B) 在全局区, frame 在栈上 ~64B */
-                NULL,
-                2,          /* 优先级 2, 低于 IMU_Task(3), 与 Ctrl_Task 同级 */
                 NULL);
 #endif
 }

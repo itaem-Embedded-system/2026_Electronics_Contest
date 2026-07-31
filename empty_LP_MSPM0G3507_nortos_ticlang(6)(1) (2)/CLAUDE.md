@@ -61,8 +61,7 @@ main()  [empty.c]
 | **BT_Task** | 3 | 128w | UART3 蓝牙接收队列 + 帧解析，填充 `g_bt_cmd` |
 | **Heartbeat** | 1 | 128w | LED 500ms 翻转，系统存活指示 |
 | **Buzzer** | 2 | 128w | 按 `g_bt_beep_cmd` 执行短鸣/长鸣提示 |
-| **ZDT_Test** | 2 | 256w | ZDT-X42S 初始化和题目 3 视觉闭环摆杆控制 |
-| **VOFA_Debug** | 2 | 256w | 条件启用；100Hz 发送 3 通道调试数据 |
+| **ZDT_Test** | 2 | 256w | ZDT-X42S 初始化、题目 3 视觉闭环摆杆控制，并通过 UART2 输出题目 3 CSV 调试数据 |
 
 ### 电机控制架构 (Ctrl_Task 核心)
 
@@ -184,8 +183,8 @@ IMU_Task 由 GPIO 中断通知驱动，核心流程：
 | OLED I2C | GPIO OD 开漏, 软件模拟 | SDA=PA0, SCL=PA1 |
 | HC-05 EN/STATE | GPIO | EN=PA15, STATE=PA16 |
 | UART1 视觉输入 | UART1, RX 中断 | 接收 ASCII `x_offset\n`, `UART_1_INST_IRQHandler` 解析 |
-| UART2 字符串/printf | UART2, 115200, RX 中断 | `[...*]` 字符串协议与 `printf` 重定向 |
-| UART3 蓝牙/VOFA | UART3, RX 中断/阻塞发送 | `hc05.c` 蓝牙接收；`vofa_debug_task` 当前也复用 UART3 发送 |
+| UART2 字符串/printf/题目3调试 | UART2, 115200, RX 中断/阻塞发送 | `[...*]` 字符串协议、`printf` 重定向与题目 3 CSV 调试输出 |
+| UART3 蓝牙 | UART3, RX 中断 | `hc05.c` 蓝牙接收；已移除旧 UART3 VOFA JustFloat 调试任务 |
 | ZDT UART | UART0, 115200, RX 中断 | TX=PA10, RX=PB1 |
 | 按键 S4 | GPIO 输入, 上拉 | PB21 |
 | LED | GPIO 输出 | PB22 |
@@ -251,9 +250,9 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 
 同理 `configCPU_CLOCK_HZ (80000000)` 在 `FreeRTOSConfig.h` 中硬编码，必须手动与 SysConfig 时钟树保持一致。
 
-### 🟡 注意: VOFA 与蓝牙 UART3 复用
+### 🟡 注意: 题目 3 串口文本调试输出
 
-`vofa_debug_task()` 当前发送回调使用 `UART_3_INST`，而 `hc05.c` 也用 UART3 做蓝牙接收。如果同时启用蓝牙控制和 VOFA 调试输出，可能在同一串口上混杂二进制 JustFloat 数据与蓝牙协议数据。调试时需明确 UART3 当前接的是蓝牙还是 VOFA 上位机。
+题目 3 通过 `zdt_motor_test_task()` 中的 `VOFA_SendString()` 经 UART2 发送文本 CSV；由于 UART2 同时负责 `printf` 重定向和字符串命令接收，调试输出应保持低频、短行，避免阻塞控制任务。
 
 ### 🟡 注意: 题目 3 视觉数据处理存在重复消费结构
 
@@ -367,7 +366,7 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 **修改内容**:
 - `user/rtos_tasks.c`: 新增 `g_line_trace_smooth_start` 状态和 `LineTrace_StartInternal(config, smooth_start)`。原因是区分普通循迹启动和 S1/S2 专属平滑启动, 不改变 `LineTrace_Config_t` 参数结构和 S1/S2 参数值。
 - `user/rtos_tasks.c`: 将速度滤波首次赋值逻辑改为: 普通启动仍直接进入目标速度, 平滑启动则从 `0.0f` 开始按 `LINE_SPEED_STEP=1.0f` 逐周期爬升到目标速度。原因是只限制 S1/S2 起步阶段速度变化, 不影响后续弯道/直线速度切换逻辑。
-- `user/rtos_tasks.c`: 将 S1、S2 按键分支改为调用 `LineTrace_StartSmooth()`, S4 仍调用 `LineTrace_Start()`。原因是平滑起步只作用于 S1/S2, S4 的现有起步行为保持不变。
+- `user/rtos_tasks.c`: 将 S1、S2 按键分支改为调用带步进参数的平滑启动入口, S4 仍调用 `LineTrace_Start()`。原因是平滑起步只作用于 S1/S2, S4 的现有起步行为保持不变。
 
 **仍需实车验证**:
 - 若 S1/S2 起步仍偏冲, 可降低 `LINE_SPEED_STEP` 或增加单独的起步步进值。
