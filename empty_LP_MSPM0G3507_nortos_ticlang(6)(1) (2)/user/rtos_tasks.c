@@ -157,12 +157,16 @@ static uint8_t g_line_trace_turn_out_count = 0;
 // ACC: ZDT 加速度档位，范围 0~255；太大换向会猛，太小启动和制动会慢。
 #define ROD_DEFAULT_MIN_PULSE          (-80)   // 提高摆幅上限，让 out 不再过早顶到 ±120；若再次发散再降回 ±120
 #define ROD_DEFAULT_MAX_PULSE          (80)    // 提高摆幅上限，让 out 不再过早顶到 ±120；若再次发散再降回 ±120
-#define ROD_DEFAULT_MAX_STEP           45       // 提高每 50ms 最大变化量，加快响应；若输出边沿太硬再降到 30
+#define ROD_DEFAULT_MAX_STEP           25       // 20ms 周期下保守限制单次变化量，避免周期加快后摆杆动作过硬
 #define ROD_DEFAULT_CMD_TO_PULSE       300.0f   // 后续钢珠控制输出 -1.0~+1.0 时，对应 -500~+500 脉冲
 #define ROD_DEFAULT_RPM                220      // 提高位置模式速度；若换向太猛或过冲明显再降到 180
 #define ROD_DEFAULT_ACC                50       // 提高加速度档位；若换向太猛或过冲明显再降到 40
 
 // ================= Question 3 钢球视觉闭环参数 =================
+#define Q3_CONTROL_PERIOD_MS           20U
+#define Q3_DEBUG_OUTPUT_ENABLE         0U
+#define Q3_DEBUG_OUTPUT_PERIOD_MS      100U
+#define Q3_DEBUG_DIVIDER               (Q3_DEBUG_OUTPUT_PERIOD_MS / Q3_CONTROL_PERIOD_MS)
 // 当前视觉模块输出的是 x_offset，单位是像素；进入控制前会先用 Q3_VISION_POS_SIGN 统一成物理坐标。
 // 调试顺序建议：先确认 Q3_VISION_POS_SIGN，再标定 Q3_TARGET_5CM_PX，再确认 Q3_KP_PULSE_PER_PX 正负号，最后调 Kp/Kd。
 
@@ -180,8 +184,8 @@ static uint8_t g_line_trace_turn_out_count = 0;
 // 数值偏小：目标实际距离不到 5cm；数值偏大：目标会超过 5cm。
 #define Q3_TARGET_5CM_PX               500.0f
 
-// 目标点每 50ms 移动多少像素。调大：目标移动更快，球更容易冲；调小：更稳但完成更慢。
-// 例：1.0f 表示约 20px/s。如果球一启动就冲，先降到 0.5f。
+// 目标点每个 Q3_CONTROL_PERIOD_MS 周期移动多少像素。调大：目标移动更快，球更容易冲；调小：更稳但完成更慢。
+// 该参数预留给 O→+5cm→-5cm 目标序列，第一轮中心保持暂不使用。
 #define Q3_TARGET_STEP_PX              3.0f
 
 // 位置比例项：rod_cmd = Kp * (target_pos - ball_pos)。绝对值越大，摆杆拉球越用力。
@@ -212,14 +216,14 @@ static uint8_t g_line_trace_turn_out_count = 0;
 // 到达目标的速度容差，单位为每控制周期的像素变化量。调大：更容易判定稳定；调小：必须更慢才算稳定。
 #define Q3_REACH_VEL_TOL_PX            1.0f
 
-// 连续多少个 50ms 周期都满足位置和速度容差，才认为到达。10U 约等于 0.5s。
+// 连续多少个 Q3_CONTROL_PERIOD_MS 周期都满足位置和速度容差，才认为到达。
 #define Q3_REACH_CONFIRM_COUNT         10U
 
-// 在 +5cm 到达后保持多少个 50ms 周期，再折返去 -5cm。20U 约等于 1s。
+// 在 +5cm 到达后保持多少个 Q3_CONTROL_PERIOD_MS 周期，再折返去 -5cm。
 #define Q3_HOLD_POSITIVE_CYCLES        20U
 
-// 连续多少个 50ms 周期没有收到视觉新数据，就认为视觉丢失并回中。10U 约等于 0.5s。
-#define Q3_VISION_LOST_CYCLES          10U
+// 连续多少个 Q3_CONTROL_PERIOD_MS 周期没有收到视觉新数据，就认为视觉丢失并回中。25U 约等于 0.5s。
+#define Q3_VISION_LOST_CYCLES          25U
 
 
 static const RodActuator_Config_t g_rod_default_config = {
@@ -501,6 +505,10 @@ bool RodActuator_SetTargetPulse(int32_t target_pulse)
 
     target_pulse = RodActuator_LimitPulse(target_pulse);
     target_pulse = RodActuator_LimitStep(target_pulse);
+
+    if (target_pulse == g_rod_target_pulse) {
+        return true;
+    }
 
     if (RodActuator_SendAbsolute(target_pulse)) {
         g_rod_target_pulse = target_pulse;
@@ -1339,7 +1347,7 @@ static void zdt_motor_test_task(void *pvParameters)
     float ball_vel_px = 0.0f;
     int32_t last_target_pulse = 0;
     uint16_t vision_lost_count = 0;
-#if USE_VOFA_DEBUG
+#if USE_VOFA_DEBUG && Q3_DEBUG_OUTPUT_ENABLE
     char vofa_buf[128];
     uint8_t vofa_debug_div = 0;
 #endif
@@ -1410,6 +1418,7 @@ static void zdt_motor_test_task(void *pvParameters)
                 RodActuator_ReturnCenter();
                 Stopwatch_Stop();
                 contest_started = false;
+                vision_zero_ready = false;
                 vision_zero_offset_px = 0.0f;
                 ball_pos_px = 0.0f;
                 last_ball_pos_px = 0.0f;
@@ -1422,12 +1431,11 @@ static void zdt_motor_test_task(void *pvParameters)
                 if (!primask) {
                     __enable_irq();
                 }
-            } else {
-                RodActuator_SetTargetPulse(0);
             }
         } else {
             if (!contest_started) {
                 contest_started = true;
+                vision_zero_ready = false;
                 ball_pos_px = 0.0f;
                 last_ball_pos_px = ball_pos_px;
                 ball_vel_px = 0.0f;
@@ -1454,10 +1462,10 @@ static void zdt_motor_test_task(void *pvParameters)
             }
         }
 
-#if USE_VOFA_DEBUG
+#if USE_VOFA_DEBUG && Q3_DEBUG_OUTPUT_ENABLE
         if (question3_running) {
             vofa_debug_div++;
-            if (vofa_debug_div >= 2U) {
+            if (vofa_debug_div >= Q3_DEBUG_DIVIDER) {
                 vofa_debug_div = 0U;
                 snprintf(vofa_buf, sizeof(vofa_buf),
                          "%lu,%d,%ld,%ld,%ld,%ld,%ld,%u,%u\n",
@@ -1477,7 +1485,7 @@ static void zdt_motor_test_task(void *pvParameters)
         }
 #endif
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(Q3_CONTROL_PERIOD_MS));
     }
 }
 #endif
@@ -1773,7 +1781,7 @@ void RTOS_Tasks_Init(void) {
 #if USE_ZDT_STEPPER
     xTaskCreate((TaskFunction_t)zdt_motor_test_task,
                 "ZDT_Test",
-                512,        // 2KB: 题目3任务包含 VOFA 缓冲、snprintf 和多组浮点局部变量，256w 容易栈溢出
+                512,        // 2KB: 题目3任务包含视觉滤波、ZDT帧缓存和多组浮点局部变量，256w容易栈溢出
                 NULL,
                 2,
                 NULL);
@@ -1840,3 +1848,27 @@ uint32_t App_GetStatsTimerValue(void)
     // 直接读取我们刚配置的 TIMER_STATS 的当前计数值
     return DL_Timer_getTimerCount(TIMER_STATS_INST);
 }
+
+/*
+ * 修改日志 2026-08-01: 第三题第一轮控制周期与调试输出优化
+ *
+ * 修改背景:
+ * - 第三题视觉闭环摆杆响应偏慢，需要先降低 ZDT 控制任务周期。
+ * - UART2 VOFA 文本输出为阻塞发送，比赛运行时不应进入第三题控制路径。
+ * - ZDT 绝对位置命令不应在目标未变化或第三题空闲态持续重复发送。
+ *
+ * 修改内容:
+ * - 新增 Q3_CONTROL_PERIOD_MS=20U，将 zdt_motor_test_task() 周期从 50ms 调整为 20ms。
+ * - 新增 Q3_DEBUG_OUTPUT_ENABLE=0U，第三题 VOFA CSV 输出需同时满足 USE_VOFA_DEBUG 和本地开关才会编译。
+ * - 将 Q3_VISION_LOST_CYCLES 从 10U 调整为 25U，保持视觉丢失回中判定约 0.5s。
+ * - 将 ROD_DEFAULT_MAX_STEP 从 45 调整为 25，避免周期变快后摆杆单周期变化过硬。
+ * - RodActuator_SetTargetPulse() 在目标脉冲未变化时直接返回，减少重复 ZDT 位置命令。
+ * - 第三题非运行且未处于退出切换时不再每周期发送 0 位置命令，降低对其他题目后台干扰。
+ * - 进入和退出第三题时清除 vision_zero_ready，确保每次运行重新用首帧视觉数据建立零位。
+ *
+ * 仍需实车验证:
+ * - 第三题重新进入后视觉零位是否正确。
+ * - 20ms 周期下摆杆响应是否更快且不过冲。
+ * - 视觉短暂抖动时是否不会误判丢失，遮挡约 0.5s 后是否回中。
+ * - 题目 2/4/5/6 的循迹、位置环和 OLED 菜单行为是否不受影响。
+ */

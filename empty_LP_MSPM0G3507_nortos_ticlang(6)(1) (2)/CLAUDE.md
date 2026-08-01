@@ -45,23 +45,23 @@ main()  [empty.c]
   └── vTaskStartScheduler()      — 启动调度器, 正常不返回
 ```
 
-`RTOS_Tasks_Init()` 是运行期核心装配点：先创建 `target_ctrl_Mutex`，再创建 IMU、底盘控制、CPU 监控、菜单按键、灰度采样、OLED、蓝牙、蜂鸣器和 ZDT 摆杆任务。题目 3 的 VOFA/CSV 调试输出集成在 `ZDT_Test` 任务中，不再有独立 VOFA 调试任务。若关键任务创建失败，代码会关中断、停电机、蜂鸣器/LED 报警并软复位。
+`RTOS_Tasks_Init()` 是运行期核心装配点：先创建 `target_ctrl_Mutex`，再按功能宏条件创建 IMU (`USE_IMU_SENSOR`)、底盘控制、CPU 监控、菜单按键、灰度采样、OLED、蓝牙 (`USE_BLUETOOTH`)、蜂鸣器和 ZDT 摆杆 (`USE_ZDT_STEPPER`) 任务。当前 `USE_IMU_SENSOR=0`、`USE_BLUETOOTH=0`、`USE_VOFA_DEBUG=0`，IMU 任务、蓝牙任务和 ZDT_Test 中的 VOFA/CSV 调试输出均未启用。若关键任务创建失败，代码会关中断、停电机、蜂鸣器/LED 报警并软复位。
 
 ### FreeRTOS 任务总览 (按创建顺序)
 
 | 任务名 | 优先级 | 堆栈 | 功能 |
 |--------|-------|------|------|
-| **IMU_Task** | 4 | 768w | LSM6DSR 初始化→热稳定→零偏校准→Mahony 姿态解算，GPIO INT 通知触发运行 |
+| **IMU_Task** | 4 | 768w | ⚠️ 已禁用 (USE_IMU_SENSOR=0) — LSM6DSR 初始化→热稳定→零偏校准→Mahony 姿态解算，GPIO INT 通知触发运行 |
 | **Ctrl_Task** | 2 | 512w | 50ms 周期底盘主控制：蓝牙/yaw/位置/循迹目标 → 编码器反馈 → 并联 PID → PWM 输出 |
 | **CPU_Monitor** | 1 | 256w | 每秒统计各任务 CPU 占用率、堆栈水位和剩余堆 |
 | **KeyScan** | 2 | 128w | 10ms 按键扫描；OLED 菜单选择题目 2~6；S4 确定，S2 返回/停止 |
 | **Sonar_Task** | 2 | 256w | 条件启用；超声波 Trig/Echo 测距，当前 `USE_ULTRASONIC=0` 不创建 |
 | **GrayTask** | 2 | 128w | 10ms 读取八路灰度，计算 `g_gray_raw_data/g_gray_error` 并锁存停止线 |
 | **OLED_Task** | 1 | 768w | OLED 菜单/运行界面刷新，20ms 周期 |
-| **BT_Task** | 3 | 128w | UART3 蓝牙接收队列 + 帧解析，填充 `g_bt_cmd` |
+| **BT_Task** | 3 | 128w | ⚠️ 已禁用 (USE_BLUETOOTH=0) — UART3 蓝牙接收队列 + 帧解析，填充 `g_bt_cmd` |
 | **Heartbeat** | 1 | 128w | LED 500ms 翻转，系统存活指示 |
 | **Buzzer** | 2 | 128w | 按 `g_bt_beep_cmd` 执行短鸣/长鸣提示 |
-| **ZDT_Test** | 2 | 512w | ZDT-X42S 初始化、题目 3 视觉闭环摆杆控制，并通过 UART2 输出题目 3 CSV 调试数据 |
+| **ZDT_Test** | 2 | 512w | ZDT-X42S 初始化、题目 3 视觉闭环摆杆控制（VOFA 调试输出已禁用: USE_VOFA_DEBUG=0） |
 
 ### 电机控制架构 (Ctrl_Task 核心)
 
@@ -217,6 +217,14 @@ IMU_Task 由 GPIO 中断通知驱动，核心流程：
 | `user/ZDT_X42S.c` | ZDT-X42S 串口协议、反馈帧接收队列和基础运动命令 |
 | `user/vofa.c` | VOFA FireWater/JustFloat 数据打包发送与接收缓冲框架 |
 
+## Coding Conventions
+
+- 修改代码时必须写修改日志（原因 + 修改内容 + 仍需实车验证），参考本文档修改日志部分的格式
+- 浮点运算在 M0+ 上为软件模拟，避免在中断或高频循环中使用 `sqrtf`/`sinf`
+- PID 参数调整建议小步进行（如 KP 变化 ≤0.05），每次调整后需实车验证
+- 循迹参数分题目独立配置，修改某题参数不得影响其他题目
+- 正式测试期间蓝牙 (HC-05) 必须禁用或确保不参与控制
+
 ## Shared Data Flow
 
 关键数据通过 `volatile extern` 全局变量在任务间共享 (`alldata.h` 声明, `rtos_tasks.c` 定义):
@@ -253,15 +261,15 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 
 ### 🟡 注意: 题目 3 串口文本调试输出
 
-题目 3 通过 `zdt_motor_test_task()` 中的 `VOFA_SendString()` 经 UART2 发送文本 CSV；由于 UART2 同时负责 `printf` 重定向和字符串命令接收，调试输出应保持低频、短行，避免阻塞控制任务。VOFA 字段、分析脚本和强化诊断计划统一维护在根目录 `.trae/documents/vofa分析脚本编写指导.md`。
+题目 3 的 VOFA 文本 CSV 调试输出由 `#if USE_VOFA_DEBUG` 条件编译保护，当前 `USE_VOFA_DEBUG=0`，因此 `zdt_motor_test_task()` 中的 `VOFA_SendString()` 调用未被编译，ZDT_Test 任务不输出任何调试数据。需要调试时，将 `user/rtos_tasks.h` 中 `USE_VOFA_DEBUG` 改为 `1` 并重新编译。UART2 仍负责 `printf` 重定向和字符串命令接收。VOFA 字段、分析脚本和诊断方法统一维护在根目录 `.trae/documents/vofa分析脚本编写指导.md`。
 
 ### 🟡 注意: 题目 3 钢球控制仍是基础视觉 PD
 
 `zdt_motor_test_task()` 当前只做中心 `0px` 稳定，控制律为位置误差 P 项 + 视觉速度 D 项。尚未接入 O→+5cm→-5cm 自动目标序列，也未结合小车速度、加速度或转弯状态做行驶中稳球前馈。任务 4/5 的行驶中稳球和任务 6 的指定位置保持仍需要继续完善。
 
-### 🟡 注意: 题目 3 视觉数据处理存在重复消费结构
+### ✅ 已修复: 题目 3 视觉数据处理消费结构 (2026-08-01)
 
-`zdt_motor_test_task()` 在循环前半段和题目 3 分支内都检查 `g_vision_ready_flag`，存在同一标志被前半段清掉后，题目 3 分支当周期拿不到“新数据”的风险。当前仍能依赖前半段更新后的 `ball_pos_px/ball_vel_px` 控制，但后续若重构题目 3，建议先整理成单一视觉数据消费入口。
+`zdt_motor_test_task()` 原先在循环前半段和题目 3 分支内两处检查 `g_vision_ready_flag`，存在双消费和两套 `raw_ball_pos_px` 公式不一致问题。已修复为：PRIMASK 临界区内唯一快照入口 → 统一视觉处理块（含 `Q3_ZERO_BIAS_PX`）→ 题目 3 分支只消费 `ball_pos_px/ball_vel_px/vision_lost_count` 状态量。视觉丢失回中时间恢复为设计的 `Q3_VISION_LOST_CYCLES × 50ms`。
 
 ## 修改日志
 
