@@ -12,7 +12,7 @@
 #define USE_OLED_DISPLAY     1   // OLED 显示屏
 #define USE_ZDT_STEPPER      1   // 张大头步进电机
 #define USE_BLUETOOTH        0   // 蓝牙模块
-#define USE_VOFA_DEBUG       1  // VOFA 调试输出
+#define USE_VOFA_DEBUG       0  // VOFA 调试输出
 
 typedef struct {
     float straight_speed;
