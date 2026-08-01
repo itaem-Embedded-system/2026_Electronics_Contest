@@ -273,6 +273,21 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 
 ## 修改日志
 
+### 2026-08-01: 题目3小球卡死检测与突破脉冲
+
+**修改背景**: 题目3视觉闭环时, 小球可能在非中心位置发生机械卡死。此时视觉仍持续输出偏移值, 但普通 PD 控制不足以让小球重新移动, 需要在检测到非中心静止后给摆杆一次更大的突破动作。
+
+**修改内容**:
+- `user/rtos_tasks.c`: 新增 `Q3_STUCK_POS_THRESHOLD_PX`、`Q3_STUCK_VEL_THRESHOLD_PX`、`Q3_STUCK_CONFIRM_COUNT`、`Q3_BREAKTHROUGH_PULSE` 和 `Q3_BREAKTHROUGH_COOLDOWN_COUNT`。原因是用视觉位置偏离、滤波速度和连续周期数定义卡死, 并给突破动作设置独立幅度和冷却窗口。
+- `user/rtos_tasks.c`: 新增 `RodActuator_SetTargetPulseFast()`。原因是突破脉冲需要绕过普通 `RodActuator_SetTargetPulse()` 的单周期限步, 但仍必须经过绝对行程限幅并保持 `g_rod_target_pulse` 与下发位置一致。
+- `user/rtos_tasks.c`: 在 `zdt_motor_test_task()` 中增加 `stuck_count` 和 `breakthrough_cooldown`。原因是在题目3运行态内检测“视觉持续有效 + 非中心 + 低速近似静止”的连续状态, 触发后发送一次 ±70 脉冲突破目标, 并在冷却期间避免连续冲击。
+- `user/rtos_tasks.c`: VOFA CSV 调试字段末尾追加 `stuck_count` 和 `breakthrough_cooldown`。原因是实车调试时需要观察卡死计数是否误触发以及突破冷却是否按预期递减。
+
+**仍需实车验证**:
+- 小球停在非中心位置约 100ms 后应触发一次突破, 中心附近不应误触发。
+- 突破脉冲方向必须确认: 若触发后小球更卡或远离中心, 需要反转突破方向逻辑或重新校准视觉/控制符号。
+- `Q3_BREAKTHROUGH_PULSE=70`、`Q3_STUCK_CONFIRM_COUNT=5U`、`Q3_STUCK_VEL_THRESHOLD_PX=2.0f` 需要根据机构摩擦和视觉抖动实车微调。
+
 ### 2026-07-31: 题目5/6专属降速和平稳起步
 
 **修改背景**: 用户要求题目5和题目6采用平稳起步, 同时题目5/6直行和转向速度都为 `10.0f`。后续明确本次更改不能影响题目4, 因此题目4的位置环参数保持原值。

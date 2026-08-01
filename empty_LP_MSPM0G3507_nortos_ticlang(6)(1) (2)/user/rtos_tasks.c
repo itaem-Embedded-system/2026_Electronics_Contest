@@ -225,6 +225,13 @@ static uint8_t g_line_trace_turn_out_count = 0;
 // 连续多少个 Q3_CONTROL_PERIOD_MS 周期没有收到视觉新数据，就认为视觉丢失并回中。25U 约等于 0.5s。
 #define Q3_VISION_LOST_CYCLES          25U
 
+// 非中心低速连续满足时判定小球机械卡死，突破脉冲绕过普通单周期限步但仍遵守绝对行程。
+#define Q3_STUCK_POS_THRESHOLD_PX      6.0f
+#define Q3_STUCK_VEL_THRESHOLD_PX      2.0f
+#define Q3_STUCK_CONFIRM_COUNT         5U
+#define Q3_BREAKTHROUGH_PULSE          70
+#define Q3_BREAKTHROUGH_COOLDOWN_COUNT 6U
+
 
 static const RodActuator_Config_t g_rod_default_config = {
     ROD_DEFAULT_MIN_PULSE,
@@ -505,6 +512,26 @@ bool RodActuator_SetTargetPulse(int32_t target_pulse)
 
     target_pulse = RodActuator_LimitPulse(target_pulse);
     target_pulse = RodActuator_LimitStep(target_pulse);
+
+    if (target_pulse == g_rod_target_pulse) {
+        return true;
+    }
+
+    if (RodActuator_SendAbsolute(target_pulse)) {
+        g_rod_target_pulse = target_pulse;
+        return true;
+    }
+
+    return false;
+}
+
+static bool RodActuator_SetTargetPulseFast(int32_t target_pulse)
+{
+    if (!g_rod_ready) {
+        return false;
+    }
+
+    target_pulse = RodActuator_LimitPulse(target_pulse);
 
     if (target_pulse == g_rod_target_pulse) {
         return true;
@@ -1347,6 +1374,8 @@ static void zdt_motor_test_task(void *pvParameters)
     float ball_vel_px = 0.0f;
     int32_t last_target_pulse = 0;
     uint16_t vision_lost_count = 0;
+    uint16_t stuck_count = 0;
+    uint16_t breakthrough_cooldown = 0;
 #if USE_VOFA_DEBUG && Q3_DEBUG_OUTPUT_ENABLE
     char vofa_buf[128];
     uint8_t vofa_debug_div = 0;
@@ -1425,6 +1454,8 @@ static void zdt_motor_test_task(void *pvParameters)
                 ball_vel_px = 0.0f;
                 last_target_pulse = 0;
                 vision_lost_count = 0;
+                stuck_count = 0;
+                breakthrough_cooldown = 0;
                 uint32_t primask = __get_PRIMASK();
                 __disable_irq();
                 g_vision_ready_flag = 0U;
@@ -1441,24 +1472,70 @@ static void zdt_motor_test_task(void *pvParameters)
                 ball_vel_px = 0.0f;
                 last_target_pulse = 0;
                 vision_lost_count = 0;
+                stuck_count = 0;
+                breakthrough_cooldown = 0;
                 Stopwatch_Start();
             }
 
             if (vision_lost_count >= Q3_VISION_LOST_CYCLES) {
                 ball_vel_px = 0.0f;
                 last_target_pulse = 0;
+                stuck_count = 0;
+                breakthrough_cooldown = 0;
                 RodActuator_ReturnCenter();
             } else {
                 float pos_error_px = target_pos_px - ball_pos_px;
                 float rod_cmd = Q3_KP_PULSE_PER_PX * pos_error_px - Q3_KD_PULSE_PER_PX * ball_vel_px;
+                bool stuck_condition;
+                bool breakthrough_sent = false;
+
                 if (rod_cmd > (float)ROD_DEFAULT_MAX_PULSE) {
                     rod_cmd = (float)ROD_DEFAULT_MAX_PULSE;
                 } else if (rod_cmd < (float)ROD_DEFAULT_MIN_PULSE) {
                     rod_cmd = (float)ROD_DEFAULT_MIN_PULSE;
                 }
 
-                last_target_pulse = (int32_t)rod_cmd;
-                RodActuator_SetTargetPulse(last_target_pulse);
+                if (breakthrough_cooldown > 0U) {
+                    breakthrough_cooldown--;
+                }
+
+                stuck_condition = has_new_vision
+                               && (breakthrough_cooldown == 0U)
+                               && (fabsf(pos_error_px) >= Q3_STUCK_POS_THRESHOLD_PX)
+                               && (fabsf(ball_vel_px) <= Q3_STUCK_VEL_THRESHOLD_PX);
+                if (stuck_condition) {
+                    if (stuck_count < UINT16_MAX) {
+                        stuck_count++;
+                    }
+                } else {
+                    stuck_count = 0;
+                }
+
+                if (stuck_count >= Q3_STUCK_CONFIRM_COUNT) {
+                    int32_t breakthrough_target_pulse;
+
+                    if (rod_cmd > 0.0f) {
+                        breakthrough_target_pulse = Q3_BREAKTHROUGH_PULSE;
+                    } else if (rod_cmd < 0.0f) {
+                        breakthrough_target_pulse = -Q3_BREAKTHROUGH_PULSE;
+                    } else if (pos_error_px >= 0.0f) {
+                        breakthrough_target_pulse = Q3_BREAKTHROUGH_PULSE;
+                    } else {
+                        breakthrough_target_pulse = -Q3_BREAKTHROUGH_PULSE;
+                    }
+
+                    if (RodActuator_SetTargetPulseFast(breakthrough_target_pulse)) {
+                        last_target_pulse = breakthrough_target_pulse;
+                        stuck_count = 0;
+                        breakthrough_cooldown = Q3_BREAKTHROUGH_COOLDOWN_COUNT;
+                        breakthrough_sent = true;
+                    }
+                }
+
+                if (!breakthrough_sent) {
+                    last_target_pulse = (int32_t)rod_cmd;
+                    RodActuator_SetTargetPulse(last_target_pulse);
+                }
             }
         }
 
@@ -1468,7 +1545,7 @@ static void zdt_motor_test_task(void *pvParameters)
             if (vofa_debug_div >= Q3_DEBUG_DIVIDER) {
                 vofa_debug_div = 0U;
                 snprintf(vofa_buf, sizeof(vofa_buf),
-                         "%lu,%d,%ld,%ld,%ld,%ld,%ld,%u,%u\n",
+                         "%lu,%d,%ld,%ld,%ld,%ld,%ld,%u,%u,%u,%u\n",
                          (unsigned long)g_rx_pulse,
                          (int)g_vision_x_offset,
                          (long)ball_pos_px,
@@ -1477,7 +1554,9 @@ static void zdt_motor_test_task(void *pvParameters)
                          (long)last_target_pulse,
                          (long)RodActuator_GetTargetPulse(),
                          (unsigned int)vision_lost_count,
-                         (unsigned int)question3_running);
+                         (unsigned int)question3_running,
+                         (unsigned int)stuck_count,
+                         (unsigned int)breakthrough_cooldown);
                 VOFA_SendString(vofa_buf);
             }
         } else {
