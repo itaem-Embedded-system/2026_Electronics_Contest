@@ -55,13 +55,13 @@ main()  [empty.c]
 | **Ctrl_Task** | 2 | 512w | 50ms 周期底盘主控制：蓝牙/yaw/位置/循迹目标 → 编码器反馈 → 并联 PID → PWM 输出 |
 | **CPU_Monitor** | 1 | 256w | 每秒统计各任务 CPU 占用率、堆栈水位和剩余堆 |
 | **KeyScan** | 2 | 128w | 10ms 按键扫描；OLED 菜单选择题目 2~6；S4 确定，S2 返回/停止 |
-| **Sonar_Task** | 2 | 256w | 条件启用；超声波 Trig/Echo 测距，当前 `USE_ULTRASONIC=0` 不创建 |
+| **Sonar_Task** | 2 | 256w | 条件启用；超声波 Trig/Echo 测距（100ms 周期），当前 `USE_ULTRASONIC=0` 不创建 |
 | **GrayTask** | 2 | 128w | 10ms 读取八路灰度，计算 `g_gray_raw_data/g_gray_error` 并锁存停止线 |
 | **OLED_Task** | 1 | 768w | OLED 菜单/运行界面刷新，20ms 周期 |
 | **BT_Task** | 3 | 128w | ⚠️ 已禁用 (USE_BLUETOOTH=0) — UART3 蓝牙接收队列 + 帧解析，填充 `g_bt_cmd` |
 | **Heartbeat** | 1 | 128w | LED 500ms 翻转，系统存活指示 |
 | **Buzzer** | 2 | 128w | 按 `g_bt_beep_cmd` 执行短鸣/长鸣提示 |
-| **ZDT_Test** | 2 | 512w | ZDT-X42S 初始化、题目 3 视觉闭环摆杆控制（VOFA 调试输出已禁用: USE_VOFA_DEBUG=0） |
+| **ZDT_Test** | 2 | 512w | ZDT-X42S 初始化、题目 3 视觉闭环摆杆控制（VOFA 调试输出已禁用: `USE_VOFA_DEBUG=0` + `Q3_DEBUG_OUTPUT_ENABLE=0U`） |
 
 ### 电机控制架构 (Ctrl_Task 核心)
 
@@ -172,13 +172,13 @@ IMU_Task 由 GPIO 中断通知驱动，核心流程：
 | 功能 | 外设 | 引脚 |
 |------|------|------|
 | SPI0 (IMU) | SPI1, MOTO3, 4MHz | SCK=PB9, MOSI=PB8, MISO=PB7, CS=PB6 |
-| IMU INT1 | GPIO 中断, 上升沿, pri 3 | PB14 |
+| IMU INT1 | GPIO 中断, 上升沿, pri 3 | PB0 |
 | 左编码器 AB | GPIO 中断, 上升沿 | A=PB13, B=PB12 |
 | 右编码器 AB | GPIO 中断, 上升沿 | A=PA9, B=PA8 |
 | 左电机 PWM | TIMG6, CCP0/1 | PB26, PB27 |
 | 右电机 PWM | TIMG8, CCP0/1 | PB10, PB11 |
 | 超声波 Trig | GPIO 输出 | PB3 |
-| 超声波 Echo | GPIO 中断, 上升沿 | PB23 |
+| 超声波 Echo | GPIO 中断, RISE_FALL (双沿) | PB23 |
 | 超声波 Timer | TIMA0, ONE_SHOT_UP, 25ms | — |
 | 八路灰度 | GPIO 输入, 8 通道 | OUT1-OUT8 = PA27/26/25/24, PB25/24/20, PA22 |
 | OLED I2C | GPIO OD 开漏, 软件模拟 | SDA=PA0, SCL=PA1 |
@@ -187,9 +187,9 @@ IMU_Task 由 GPIO 中断通知驱动，核心流程：
 | UART2 字符串/printf/题目3调试 | UART2, 115200, RX 中断/阻塞发送 | `[...*]` 字符串协议、`printf` 重定向与题目 3 CSV 调试输出 |
 | UART3 蓝牙 | UART3, RX 中断 | `hc05.c` 蓝牙接收；已移除旧 UART3 VOFA JustFloat 调试任务 |
 | ZDT UART | UART0, 115200, RX 中断 | TX=PA10, RX=PB1 |
-| 按键 S4 | GPIO 输入, 上拉 | PB21 |
+| 按键 S1-S4 | GPIO 输入, 上拉 | S1=PA28, S2=PA31, S3=PA11, S4=PB2 |
 | LED | GPIO 输出 | PB22 |
-| 蜂鸣器 | GPIO 输出 | PB0 |
+| 蜂鸣器 | GPIO 输出 | PA12 |
 | 运行统计 Timer | TIMG12, PERIODIC_UP, ÷8 | — |
 
 ### 用户模块头文件体系
@@ -255,13 +255,13 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 
 ### 🟡 仍存在: 时钟常量硬编码 vs SysConfig 分离
 
-`IMU_DT_FREQ_HZ (50000.0f)` 和 `IMU_DT_WRAP_VALUE (50000)` 在 `rtos_tasks.c` 中硬编码，必须与 SysConfig 中 `IMU_dt` 定时器保持一致。当前代码注释要求 `IMU_dt` 为 BUSCLK，经 `/8` 和预分频 `99` 得到 50kHz，周期 49999，1 秒回绕。
+`IMU_DT_FREQ_HZ (50000.0f)` 和 `IMU_DT_WRAP_VALUE (50000)` 在 `rtos_tasks.c` 中硬编码，必须与 SysConfig 中 `IMU_dt` 定时器保持一致。当前 SysConfig 中 `IMU_dt` (TIMG7) 配置为 `timerClkDiv=8`、`timerClkPrescale=200`、`timerPeriod=1000ms`；改时钟树时必须同步调整这两个宏。
 
 同理 `configCPU_CLOCK_HZ (80000000)` 在 `FreeRTOSConfig.h` 中硬编码，必须手动与 SysConfig 时钟树保持一致。
 
 ### 🟡 注意: 题目 3 串口文本调试输出
 
-题目 3 的 VOFA 文本 CSV 调试输出由 `#if USE_VOFA_DEBUG` 条件编译保护，当前 `USE_VOFA_DEBUG=0`，因此 `zdt_motor_test_task()` 中的 `VOFA_SendString()` 调用未被编译，ZDT_Test 任务不输出任何调试数据。需要调试时，将 `user/rtos_tasks.h` 中 `USE_VOFA_DEBUG` 改为 `1` 并重新编译。UART2 仍负责 `printf` 重定向和字符串命令接收。VOFA 字段、分析脚本和诊断方法统一维护在根目录 `.trae/documents/vofa分析脚本编写指导.md`。
+题目 3 的 VOFA 文本 CSV 调试输出由双重条件编译 `#if USE_VOFA_DEBUG && Q3_DEBUG_OUTPUT_ENABLE` 保护，当前 `USE_VOFA_DEBUG=0` 且 `Q3_DEBUG_OUTPUT_ENABLE=0U`，因此 `zdt_motor_test_task()` 中的 `VOFA_SendString()` 和 `snprintf()` 调用未被编译，ZDT_Test 任务不输出任何调试数据。需要调试时，需同时将 `user/rtos_tasks.h` 中 `USE_VOFA_DEBUG` 改为 `1` 并将 `user/rtos_tasks.c` 中 `Q3_DEBUG_OUTPUT_ENABLE` 改为 `1U`，然后重新编译。UART2 仍负责 `printf` 重定向和字符串命令接收。VOFA 字段、分析脚本和诊断方法统一维护在根目录 `.trae/documents/vofa分析脚本编写指导.md`。
 
 ### 🟡 注意: 题目 3 钢球控制仍是基础视觉 PD
 
@@ -272,6 +272,30 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 `zdt_motor_test_task()` 原先在循环前半段和题目 3 分支内两处检查 `g_vision_ready_flag`，存在双消费和两套 `raw_ball_pos_px` 公式不一致问题。已修复为：PRIMASK 临界区内唯一快照入口 → 统一视觉处理块（含 `Q3_ZERO_BIAS_PX`）→ 题目 3 分支只消费 `ball_pos_px/ball_vel_px/vision_lost_count` 状态量。视觉丢失回中时间恢复为设计的 `Q3_VISION_LOST_CYCLES × 50ms`。
 
 ## 修改日志
+
+### 2026-08-06: 注释与文档一致性修正
+
+**修改背景**: 系统比对代码、`empty.syscfg` 与注释/文档后，发现多处引脚映射、参数值、协议描述与实际代码不符，可能误导后续接线和维护。
+
+**修改内容** (均为注释/文档修正，不影响程序行为):
+
+- `CLAUDE.md` 外设映射表: IMU INT1 由 PB14 更正为 PB0；按键 S4 由 PB21 更正为 PB2（并补全 S1=PA28, S2=PA31, S3=PA11）；蜂鸣器由 PB0 更正为 PA12。以上以 `empty.syscfg` 实际引脚为准。
+- `CLAUDE.md` 已知 Bug "时钟常量硬编码": `IMU_dt` 描述由"预分频 99/周期 49999"更正为 SysConfig 实际配置 `timerClkDiv=8 / timerClkPrescale=200 / timerPeriod=1000ms`。
+- `CLAUDE.md` 修改日志: 对权重数组 (-150/+150→实际 -120/+120)、`LINE_DEFAULT_STOP_CONFIRM` (1)、`LINE_CURVE_ERROR_HOLD` (120)、`POSITION_S2_DISTANCE_CM` (165.0f) 四处在原条目后追加复核注记，以当前代码为准。
+- `user/Sensor.c`: 头注释 OUT3 权重 -150→-120、OUT6 权重 +150→+120，与权重数组一致。
+- `user/rtos_tasks.c`: `ROD_DEFAULT_CMD_TO_PULSE` 注释由"对应 ±500 脉冲"更正为"cmd=±1.0 对应 ±300 脉冲（受 max_pulse ±80 限幅）"；`IMU_dt` 宏注释预分频 99 更新为 SysConfig 的 timerClkPrescale=200 并强调以 SysConfig 为准；`imu_task` 采样触发注释澄清传感器 INT2 → MSPM0 PB0（SysConfig 命名 GPIO_IMU_INT1），头注释任务优先级由 3 更正为 4（实际创建优先级为 4）；`g_ctrl_mode` 注释由"0=蓝牙遥控"改为"0=非循迹(停止)"（蓝牙已禁用）。
+- `user/alldata.h`: `g_ctrl_mode` extern 注释同步改为"0=非循迹(停止)"。
+- `user/Key.h`: 删除无实现、无调用者的 `Key_Init()` 声明。
+- `user/uart.c`: UART1 视觉协议注释由"+ \"\\r\\n\""更正为"以 '\\n' 结束（'\\r' 被忽略）"。
+- `本工程目的以及相关限制.md`: "当前还需要补齐"第 5 条"题目 3 视觉数据消费结构"由待办改为已修复（2026-08-01 已合并为单一快照入口）。
+- `user/empty.c`: `main()` 注释编号修正（3→4, 4→5），消除重复编号。
+- `user/encoder.c`: GPIOB 多路中断注释补上超声 Echo (PB23)，与 `ti_msp_dl_config.h` 中的 `["LA","PIN_Echo","INT1"]` 一致。
+- `user/rtos_tasks.c`: `ROD_DEFAULT_MIN/MAX_PULSE` 注释由"若再次发散再降回"清理为行程语义说明。
+- `CLAUDE.md` 外设映射表: 超声波 Echo 极性由"上升沿"更正为"RISE_FALL (双沿)"，与 `empty.syscfg` 中 `polarity = "RISE_FALL"` 一致。
+- `CLAUDE.md` 任务表: ZDT_Test 描述中 VOFA 禁用条件补上 `Q3_DEBUG_OUTPUT_ENABLE=0U`；Sonar_Task 描述补上 100ms 周期。
+- `CLAUDE.md` 已知 Bug「题目 3 串口文本调试输出」: 条件编译由单一的 `USE_VOFA_DEBUG` 更新为双重守卫 `USE_VOFA_DEBUG && Q3_DEBUG_OUTPUT_ENABLE`，并说明开启调试需要同时改两个宏。
+
+**仍需实车验证**: 本次仅改注释/文档，无逻辑变更；若 SysConfig 引脚后续改动，需同步更新本文档外设表。
 
 ### 2026-08-01: 题目3小球卡死检测与突破脉冲
 
@@ -338,6 +362,7 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 
 **修改内容**:
 - `user/rtos_tasks.c`: 将 `POSITION_S2_DISTANCE_CM` 从 `150.0f` 调为 `155.0f`。原因是让 S2 位置环目标小幅加长, 小车能比原先多走约 5cm。
+  - **注 (2026-08-06 复核)**: 当前代码 `POSITION_S2_DISTANCE_CM` 实际为 `165.0f`（后续已进一步加长，中间 155→165 未单独记录），本文以代码为准。
 - `user/rtos_tasks.c`: 新增 `g_pos_stopwatch_active`。原因是只让 S2 这种位置循迹组合动作启动/停止秒表, 避免普通位置运动误触发计时。
 - `user/rtos_tasks.c`: 在 `Chassis_MoveRelativeCmLineTrace()` 成功启动位置运动后调用 `Stopwatch_Start()`。原因是 S2 按键按下并确实进入位置运动后开始计时。
 - `user/rtos_tasks.c`: 在位置环到达终点 `fabsf(pos_error) <= POSITION_TOLERANCE_PULSE` 时调用 `Chassis_ClearTarget()` 停车, 并在 `g_pos_stopwatch_active` 有效时调用 `Stopwatch_Stop()`。原因是终点到达后同时停止电机目标和计时。
@@ -441,6 +466,7 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 **修改内容**:
 - `user/rtos_tasks.c`: 移除 `LINE_TURN_OUTPUT_STEP`、`g_line_trace_turn_output`、`g_line_trace_turn_dir` 以及弯道反向修正限制逻辑。原因是这些限制直接压制最终转向输出, 实车已验证会削弱转弯动力。
 - `user/rtos_tasks.c`: 新增 `LINE_CURVE_ERROR_HOLD=90` 和 `g_line_trace_curve_error`。原因是把抗抖位置从“输出端”前移到“误差端”, 在弯道中如果新误差与上一弯道误差同向且变化小于阈值, 沿用上一误差, 减少相邻探头交替造成的转向量跳变。
+  - **注 (2026-08-06 复核)**: 当前代码 `LINE_CURVE_ERROR_HOLD` 实际为 `120`（已在后续实车中调大，本文以代码为准）。
 - `user/rtos_tasks.c`: 在退出弯道或重置循迹状态时清零 `g_line_trace_curve_error`。原因是误差保持只应作用于当前弯道, 不能影响下一段直线或下一次循迹启动。
 
 **仍需实车验证**:
@@ -512,8 +538,10 @@ OLED_Task           ← 菜单/秒表/视觉状态          — 屏幕显示
 
 **修改内容**:
 - `user/Sensor.c`: 将灰度误差权重从等距 `{-350,-240,-140,-45,45,140,240,350}` 改为按原 12 路保留位置映射的 `{-550,-350,-150,-50,50,150,350,550}`。原因是删除 2/4/9/11 后, 相邻保留探头间距不再完全一致, 等距权重会压缩外侧偏差并影响弯道判断。
+  - **注 (2026-08-06 复核)**: 当前 `Sensor.c` 实际权重为 `{-550,-350,-120,-50,50,120,350,550}`（第三/第六路为 120 而非 150），本文以代码为准。
 - `user/Sensor.c`: 新增内部函数 `Sensor_CalcErrorFromRaw(uint8_t status)`, 让 `Gray_Task` 使用同一次 `raw` 采样计算 `g_gray_raw_data` 和 `g_gray_error`。原因是原逻辑每轮任务调用 `Sensor_GetRawData()` 和 `Sensor_GetError()` 会读取两次 GPIO, 快速经过黑线边缘时可能出现 raw 与 error 不对应。
 - `user/rtos_tasks.c`: 将 `LINE_DEFAULT_STOP_CONFIRM` 从 1 调为 2。原因是 8 路硬件缺少部分通道后, 单次采样触发停止线的抗抖余量偏小, 连续 2 次确认能降低误停概率。
+  - **注 (2026-08-06 复核)**: 当前代码 `LINE_DEFAULT_STOP_CONFIRM` 实际为 `1`（已回调，本次以代码为准）。
 
 **仍需实车验证**:
 - 若实际 OUT1-OUT8 并不是从左到右对应原 12 路的 1、3、5、6、7、8、10、12, 需要按真实安装顺序调整 `Sensor.c` 中的权重数组。

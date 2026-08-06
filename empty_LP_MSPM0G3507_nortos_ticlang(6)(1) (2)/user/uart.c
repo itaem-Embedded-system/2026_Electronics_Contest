@@ -30,7 +30,7 @@ int fputc(int c, FILE* stream) {
 }
 
 // ================= UART_1: 视觉模块按行接收 =================
-// 协议：ASCII 有符号十进制整数 + "\r\n"，表示 x_offset（像素）。
+// 协议：ASCII 有符号十进制整数，以 '\n' 结束（'\r' 被忽略），表示 x_offset（像素）。
 void UART_1_INST_IRQHandler(void)
 {
     enum { VISION_LINE_MAX = 15 };

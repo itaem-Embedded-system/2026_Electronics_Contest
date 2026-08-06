@@ -1,4 +1,4 @@
-# Build outputs
+# === Build outputs ===
 **/Debug/
 **/Release/
 *.o
@@ -10,16 +10,35 @@
 *.hex
 *.bin
 
-# Archives / backups
+# === TI CCS auto-generated ===
+**/.clangd
+
+# === Claude Code (local machine-specific settings) ===
+**/.claude/settings.local.json
+
+# === Codex local config ===
+**/.codex/
+
+# === Archives / backups ===
 *.zip
 *.7z
 *.rar
+*.tar
+*.tar.gz
+*.tgz
 
-# IDE / cache
-**/.clangd/.cache/
+# === IDE / cache ===
 **/.metadata/
 **/.settings/*.log
 
-# OS
+# === Editor temp files ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*.bak
+*~
+
+# === OS ===
 Thumbs.db
 .DS_Store

@@ -57,18 +57,18 @@ void VOFA_SendString(char *str) {
 
 当前题目 3 输出位置在 `user/rtos_tasks.c` 的 `zdt_motor_test_task()` 中。
 
-当前已经升级为 9 字段，并且只在题目 3 运行时输出，每 2 个 50ms 控制周期输出 1 次，即约 10Hz。
+当前已经升级为 11 字段，并且只在题目 3 运行时输出。受 `Q3_DEBUG_OUTPUT_PERIOD_MS=100U` 和 `Q3_CONTROL_PERIOD_MS=20U` 控制，每 5 个 20ms 控制周期输出 1 次，即约 10Hz。
 
 当前固件输出代码等价于：
 
 ```c
-#if USE_VOFA_DEBUG
+#if USE_VOFA_DEBUG && Q3_DEBUG_OUTPUT_ENABLE
         if (question3_running) {
             vofa_debug_div++;
-            if (vofa_debug_div >= 2U) {
+            if (vofa_debug_div >= Q3_DEBUG_DIVIDER) {
                 vofa_debug_div = 0U;
                 snprintf(vofa_buf, sizeof(vofa_buf),
-                         "%lu,%d,%ld,%ld,%ld,%ld,%ld,%u,%u\n",
+                         "%lu,%d,%ld,%ld,%ld,%ld,%ld,%u,%u,%u,%u\n",
                          (unsigned long)g_rx_pulse,
                          (int)g_vision_x_offset,
                          (long)ball_pos_px,
@@ -77,7 +77,9 @@ void VOFA_SendString(char *str) {
                          (long)last_target_pulse,
                          (long)RodActuator_GetTargetPulse(),
                          (unsigned int)vision_lost_count,
-                         (unsigned int)question3_running);
+                         (unsigned int)question3_running,
+                         (unsigned int)stuck_count,
+                         (unsigned int)breakthrough_cooldown);
                 VOFA_SendString(vofa_buf);
             }
         } else {
@@ -89,7 +91,7 @@ void VOFA_SendString(char *str) {
 当前 CSV 格式：
 
 ```text
-rx,raw,ball,target,vel,cmd,rod,lost,run
+rx,raw,ball,target,vel,cmd,rod,lost,run,stuck,break_cl
 ```
 
 字段含义：
@@ -105,6 +107,8 @@ rx,raw,ball,target,vel,cmd,rod,lost,run
 | `rod` | `RodActuator_GetTargetPulse()` | 限幅/限速后的实际摆杆目标 |
 | `lost` | `vision_lost_count` | 判断视觉丢帧/更新不稳定 |
 | `run` | `question3_running` | 判断当前是否处于题目 3 运行状态 |
+| `stuck` | `stuck_count` | 小球卡死连续检测计数；达到 `Q3_STUCK_CONFIRM_COUNT` 触发突破脉冲 |
+| `break_cl` | `breakthrough_cooldown` | 突破脉冲冷却剩余周期；>0 期间不再触发新的突破 |
 
 设计约束：
 
@@ -113,11 +117,12 @@ rx,raw,ball,target,vel,cmd,rod,lost,run
 - 不修改 UART1 视觉接收 ISR。
 - 不修改 ZDT 底层协议。
 - 输出只在题目 3 运行时发送。
-- 默认约 10Hz，降低 UART2 阻塞影响。
+- 输出周期由 `Q3_DEBUG_OUTPUT_PERIOD_MS`（当前 100ms）和 `Q3_CONTROL_PERIOD_MS`（当前 20ms）决定：`Q3_DEBUG_DIVIDER = 100/20 = 5`，即每个控制周期判断一次、每 5 周期输出一帧，约 10Hz。
+- 编译需要同时开启 `USE_VOFA_DEBUG=1` 和 `Q3_DEBUG_OUTPUT_ENABLE=1U`，缺一不可。
 
 ---
 
-## 4. 如何通过 9 字段诊断问题
+## 4. 如何通过 11 字段诊断问题
 
 | 问题 | 主要观察字段 | 判断方法 |
 |---|---|---|
@@ -129,6 +134,8 @@ rx,raw,ball,target,vel,cmd,rod,lost,run
 | 输出限幅/限速 | `cmd,rod` | `cmd` 很大但 `rod` 每次只变一段，说明受 `ROD_DEFAULT_MAX_STEP` 限制；`cmd` 长期卡 ±上限说明饱和 |
 | 零位偏置不准 | `raw,ball,target,cmd` | 球在机械中心但 `ball` 不接近 `target`，且 `cmd` 长期非 0，需要检查 `Q3_ZERO_BIAS_PX` 和首帧零位 |
 | 视觉消费异常 | `rx,raw,ball,lost` | `rx` 增长但 `ball` 更新不稳、`lost` 偶尔上升，说明视觉接收/消费节奏需要整理 |
+| 卡死检测误触发 | `ball,stuck,break_cl` | 球在中心附近或正常运动中 `stuck` 仍在递增导致误突破；检查 `Q3_STUCK_POS_THRESHOLD_PX` / `Q3_STUCK_VEL_THRESHOLD_PX` 是否过宽 |
+| 突破冷却过长/过短 | `stuck,break_cl` | 突破后 `break_cl` 持续高位阻止下次突破，或冷却结束过快导致连续突破冲击；调整 `Q3_BREAKTHROUGH_COOLDOWN_COUNT` |
 
 ---
 
@@ -139,13 +146,14 @@ rx,raw,ball,target,vel,cmd,rod,lost,run
 脚本字段表必须与固件 CSV 严格对齐：
 
 ```python
-FIELD_NAMES = ["rx", "raw", "ball", "target", "vel", "cmd", "rod", "lost", "run"]
+FIELD_NAMES = ["rx", "raw", "ball", "target", "vel", "cmd", "rod", "lost", "run",
+               "stuck", "break_cl"]
 ```
 
 CSV 保存字段：
 
 ```text
-timestamp,time_s,line_index,rx,raw,ball,target,vel,cmd,rod,lost,run,raw_text
+timestamp,time_s,line_index,rx,raw,ball,target,vel,cmd,rod,lost,run,stuck,break_cl,raw_text
 ```
 
 解析策略：

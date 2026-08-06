@@ -5,8 +5,9 @@
 Captures CSV text lines from zdt_motor_test_task() via UART2,
 saves to CSV with absolute + relative timestamps.
 
-9-channel format: rx,raw,ball,target,vel,cmd,rod,lost,run
+11-channel format: rx,raw,ball,target,vel,cmd,rod,lost,run,stuck,break_cl
 Source: VOFA_SendString() -> UART_2_INST
+Field doc: .trae/documents/vofa分析脚本编写指导.md
 """
 
 import argparse
@@ -29,23 +30,26 @@ except ImportError:
     SerialException = Exception
 
 # ============================================================
-# 9-channel field definitions (guide sec 4.2)
-#   rx     = g_rx_pulse                   UART1 vision rx count
-#   raw    = g_vision_x_offset            raw vision x offset
-#   ball   = ball_pos_px                  filtered ball position
-#   target = target_pos_px                target position (usually 0)
-#   vel    = ball_vel_px                  ball velocity estimate
-#   cmd    = last_target_pulse            control output (before limit)
-#   rod    = RodActuator_GetTargetPulse() actual rod target (after limit)
-#   lost   = vision_lost_count            vision lost frame count
-#   run    = question3_running            question 3 active flag
+# 11-channel field definitions (sync with firmware zdt_motor_test_task)
+#   rx       = g_rx_pulse                   UART1 vision rx byte count
+#   raw      = g_vision_x_offset            raw vision x offset (px)
+#   ball     = ball_pos_px                  filtered ball position (px)
+#   target   = target_pos_px                target position (px, usually 0)
+#   vel      = ball_vel_px                  ball velocity estimate (px/cycle)
+#   cmd      = last_target_pulse            control output (pulse, before limit)
+#   rod      = RodActuator_GetTargetPulse() actual rod target (pulse, after limit)
+#   lost     = vision_lost_count            vision lost consecutive cycles
+#   run      = question3_running            question 3 active flag (0/1)
+#   stuck    = stuck_count                  consecutive stuck-detect cycles
+#   break_cl = breakthrough_cooldown        breakthrough cooldown remaining cycles
 # ============================================================
-FIELD_NAMES = ["rx", "raw", "ball", "target", "vel", "cmd", "rod", "lost", "run"]
+FIELD_NAMES = ["rx", "raw", "ball", "target", "vel", "cmd", "rod", "lost", "run",
+               "stuck", "break_cl"]
 
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="VOFA UART2 text capture (9ch question 3 debug)"
+        description="VOFA UART2 text capture (11ch question 3 debug with stuck/cool)"
     )
     p.add_argument("--port", default="COM13")
     p.add_argument("--baud", type=int, default=115200)

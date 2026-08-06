@@ -79,10 +79,10 @@ int main(void)
     // 3. 初始化编码器中断
     Encoder_Init();
 
-    // 3. 初始化所有的 RTOS 任务 
+    // 4. 初始化所有的 RTOS 任务
     RTOS_Tasks_Init();
 
-    // 4. 启动 FreeRTOS 任务调度器！(从此 CPU 控制权交给 RTOS)
+    // 5. 启动 FreeRTOS 任务调度器！(从此 CPU 控制权交给 RTOS)
     vTaskStartScheduler();
 
     // 正常情况下，程序永远不会执行到这里

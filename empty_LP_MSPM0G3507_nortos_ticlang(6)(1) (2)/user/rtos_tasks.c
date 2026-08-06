@@ -46,7 +46,7 @@ static uint8_t g_pos_stopwatch_active = 0;
 static volatile uint8_t g_question_ui_state = 0;
 static volatile uint8_t g_selected_question = 2;
 
-// 控制模式: 0=蓝牙遥控, 1=循迹模式 (菜单确定后切换)
+// 控制模式: 0=非循迹(停止), 1=循迹模式 (菜单确定后切换; 蓝牙已禁用 USE_BLUETOOTH=0)
 volatile uint8_t g_ctrl_mode = 0;
 
 // OLED 秒表状态
@@ -155,10 +155,10 @@ static uint8_t g_line_trace_turn_out_count = 0;
 // CMD_TO_PULSE: RodActuator_SetTargetCmd(cmd) 的换算比例；cmd=1.0f 时对应多少脉冲。
 // RPM: ZDT 位置模式运动速度；太大容易冲，太小跟随慢。
 // ACC: ZDT 加速度档位，范围 0~255；太大换向会猛，太小启动和制动会慢。
-#define ROD_DEFAULT_MIN_PULSE          (-80)   // 提高摆幅上限，让 out 不再过早顶到 ±120；若再次发散再降回 ±120
-#define ROD_DEFAULT_MAX_PULSE          (80)    // 提高摆幅上限，让 out 不再过早顶到 ±120；若再次发散再降回 ±120
+#define ROD_DEFAULT_MIN_PULSE          (-80)   // 摆杆允许的最小绝对目标位置（负向行程），单位脉冲
+#define ROD_DEFAULT_MAX_PULSE          (80)    // 摆杆允许的最大绝对目标位置（正向行程），单位脉冲
 #define ROD_DEFAULT_MAX_STEP           25       // 20ms 周期下保守限制单次变化量，避免周期加快后摆杆动作过硬
-#define ROD_DEFAULT_CMD_TO_PULSE       300.0f   // 后续钢珠控制输出 -1.0~+1.0 时，对应 -500~+500 脉冲
+#define ROD_DEFAULT_CMD_TO_PULSE       300.0f   // 钢珠控制输出 cmd=±1.0 时对应 ±300 脉冲；最终仍受 max_pulse(±80) 行程限幅
 #define ROD_DEFAULT_RPM                220      // 提高位置模式速度；若换向太猛或过冲明显再降到 180
 #define ROD_DEFAULT_ACC                50       // 提高加速度档位；若换向太猛或过冲明显再降到 40
 
@@ -701,19 +701,23 @@ static void Chassis_LimitTarget(void)
  * 功能: LSM6DSR 驱动 + MEMS 热稳定 + P-P 校验零偏校准 + 静止锁定 +
  *       动态 dt Mahony 融合 → roll/pitch/yaw
  *
- * 采样触发: INT2 (PB0) 中断 → ISR 通知 → 本任务唤醒
- * 任务优先级: 3 (最高, 与 BT_Task 同级)
+ * 采样触发: 传感器 INT2 引脚输出 DataReady，接 MSPM0 PB0
+ *           (SysConfig 中该引脚命名为 GPIO_IMU_INT1) → GROUP1 ISR 通知 → 本任务唤醒
+ * 任务优先级: 4 (最高)
  * 任务栈: 768 words (3072 bytes)
  * ========================================================================= */
 
 /* ---------- dt 测量定时器宏 (用户按 SysConfig 配置修改) ---------- */
 /*
- * 用户需在 SysConfig 中配置一个空闲 GPTimer (推荐 TIMG7):
+ * 用户需在 SysConfig 中配置一个空闲 GPTimer (当前为 TIMG7):
  *   名称: IMU_dt
  *   模式: PERIODIC_UP (自由运行计数器, 不产生中断)
  *   时钟源: BUSCLK
- *   分频: /8, 预分频: 99  →  计数频率 = BUSCLK/(8*100) = 50 kHz (80MHz PLL)
- *   周期: 49999 (1 秒回绕)
+ *   分频: timerClkDiv = 8
+ *   预分频: timerClkPrescale = 200   (以 empty.syscfg 中 IMU_dt 配置为准)
+ *   周期: timerPeriod = 1000ms
+ * 注意: IMU_DT_FREQ_HZ / IMU_DT_WRAP_VALUE 必须与 SysConfig 计算出的
+ *       实际计数频率和回绕值保持一致；修改时钟树时必须同步调整。
  */
 // IMU_dt_INST 已由 SysConfig 在 ti_msp_dl_config.h 中定义, 此处不再重复
 #define IMU_DT_FREQ_HZ     50000.0f    /* 计数器频率 (Hz)                   */

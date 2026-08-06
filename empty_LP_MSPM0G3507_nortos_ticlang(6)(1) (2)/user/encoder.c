@@ -9,7 +9,7 @@ void Encoder_Init(void)
     // 开启 GPIOA 中断 (对应右轮A相 RA: PA9)
     NVIC_EnableIRQ(ENCODER_A_GPIOA_INT_IRQN); 
     
-    // 开启 GPIOB 多路中断 (对应左轮A相 LA: PB13 以及 IMU 的 INT2)
+    // 开启 GPIOB 多路中断 (对应左编码器 A 相 LA: PB13, 超声 Echo: PB23, IMU INT1: PB0 三路共享 GROUP1 GPIOB)
     NVIC_EnableIRQ(GPIO_MULTIPLE_GPIOB_INT_IRQN); 
 
     // 使能系统全局中断 (注意：如果在 main 函数里已经调过，这里可以省略，但保留也没事)

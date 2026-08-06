@@ -51,7 +51,7 @@ extern volatile float pitch;
 extern volatile float yaw;
 
 /* 控制模式 (rtos_tasks.c 定义) */
-extern volatile uint8_t g_ctrl_mode;  // 0=蓝牙遥控, 1=循迹
+extern volatile uint8_t g_ctrl_mode;  // 0=非循迹(停止), 1=循迹
 
 /* ================= 6. Debug 观测变量 (CCS Expressions 窗口) ================= */
 #if USE_IMU_SENSOR
